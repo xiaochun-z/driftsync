@@ -23,9 +23,7 @@ func main() {
 	log.Printf("DriftSync v0.5 (one-shot) starting. local_path=%s tenant=%s", cfg.LocalPath, cfg.Tenant)
 
 	db, err := store.Open("driftsync.db")
-	if err != nil {
-		log.Fatalf("open db: %v", err)
-	}
+	if err != nil { log.Fatalf("open db: %v", err) }
 	defer db.Close()
 
 	tokStore := store.NewTokenStore(db)
