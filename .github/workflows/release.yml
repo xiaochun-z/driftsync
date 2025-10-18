@@ -1,197 +1,36 @@
-name: Build & Draft Release (DriftSync)
+name: Release (multi-OS + deb/rpm, draft)
 
 on:
+  # 打 tag 才发布草稿版；平时 push 不会触发
   push:
-    tags: [ 'v*' ]  # e.g. v0.5 or v0.5.1
+    tags:
+      - "v*.*.*"
 
 permissions:
-  contents: write   # needed to create Draft Release
+  contents: write   # 必须：用来创建 release 并上传资产
 
 jobs:
-  build:
+  goreleaser:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        goos: [ linux, windows ]
-        goarch: [ amd64, arm64 ]
-
-    env:
-      CGO_ENABLED: 0
-      GO111MODULE: on
-      VERSION: ${{ github.ref_name }}   # tag name, e.g. v0.5
-      BIN_NAME: driftsync
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # goreleaser 需要完整 git 历史
 
-      - name: Set up Go
+      - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.22.x'
-          cache: true
+          go-version: "1.21"
 
-      - name: Verify module path
-        run: |
-          grep -E '^module github.com/xiaochun-z/driftsync$' go.mod || \
-            (echo "go.mod module must be github.com/xiaochun-z/driftsync" && exit 1)
+      # 可选：若你用到 CGO，安装交叉编译工具链（当前配置 CGO_DISABLED=1，不需要）
+      # - name: Install cross deps
+      #   run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
 
-      - name: Tidy
-        run: go mod tidy
-
-      - name: Test (race)
-        run: go test -race ./...
-
-      - name: Build binary
-        run: |
-          mkdir -p dist
-          export GOOS=${{ matrix.goos }}
-          export GOARCH=${{ matrix.goarch }}
-
-          EXT=""
-          if [ "$GOOS" = "windows" ]; then EXT=".exe"; fi
-
-          OUT="${BIN_NAME}${EXT}"
-          go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o "dist/${OUT}" ./cmd/driftsync
-
-      - name: Package (Linux deb/rpm/tar.gz; Windows zip)
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p upload
-
-          if [ "${{ matrix.goos }}" = "windows" ]; then
-            # ---- Windows zip ----
-            EXT=".exe"
-            NAME="${BIN_NAME}_${VERSION}_windows_${{ matrix.goarch }}"
-            mkdir -p "pack/${NAME}"
-            cp "dist/${BIN_NAME}${EXT}" "pack/${NAME}/"
-            if [ -f "config.yaml" ]; then
-              cp "config.yaml" "pack/${NAME}/"
-            fi
-            (cd pack && zip -9 "../upload/${NAME}.zip" -r "${NAME}")
-          else
-            # ---- Linux: tar.gz + deb + rpm ----
-            EXT=""
-            NAME="${BIN_NAME}_${VERSION}_linux_${{ matrix.goarch }}"
-
-            # tar.gz bundle (binary + optional config.yaml)
-            mkdir -p "pack/${NAME}"
-            cp "dist/${BIN_NAME}${EXT}" "pack/${NAME}/"
-            if [ -f "config.yaml" ]; then
-              cp "config.yaml" "pack/${NAME}/"
-            fi
-            (cd pack && tar -czf "../upload/${NAME}.tar.gz" "${NAME}")
-
-            # Install nfpm for deb/rpm packaging
-            echo "Installing nfpm..."
-            go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
-            NFPM_BIN="$(go env GOPATH)/bin/nfpm"
-            if [ ! -x "$NFPM_BIN" ]; then
-              echo "nfpm not found at $NFPM_BIN" && exit 1
-            fi
-
-            # Build rootfs layout
-            rm -rf packroot && mkdir -p packroot/usr/local/bin
-            cp "dist/${BIN_NAME}${EXT}" packroot/usr/local/bin/${BIN_NAME}
-            chmod 0755 packroot/usr/local/bin/${BIN_NAME}
-
-            INCLUDE_CONFIG="false"
-            if [ -f "config.yaml" ]; then
-              INCLUDE_CONFIG="true"
-              mkdir -p packroot/etc/driftsync
-              cp config.yaml packroot/etc/driftsync/config.yaml
-              chmod 0644 packroot/etc/driftsync/config.yaml
-            fi
-
-            # Generate nfpm.yaml
-            cat > nfpm.yaml <<'EOF'
-name: "driftsync"
-description: "DriftSync - one-shot, bidirectional OneDrive sync tool"
-license: "MIT"
-homepage: "https://github.com/xiaochun-z/driftsync"
-maintainer: "Xiaochun Zhou"
-version: "${VERSION}"
-section: "utils"
-priority: "optional"
-overrides:
-  rpm:
-    summary: "DriftSync - OneDrive Sync"
-    group: "Applications/File"
-contents:
-  - src: "packroot/usr/local/bin/driftsync"
-    dst: "/usr/local/bin/driftsync"
-    file_info:
-      mode: 0755
-EOF
-
-            if [ "$INCLUDE_CONFIG" = "true" ]; then
-              cat >> nfpm.yaml <<'EOF'
-  - src: "packroot/etc/driftsync/config.yaml"
-    dst: "/etc/driftsync/config.yaml"
-    type: "config|noreplace"
-    file_info:
-      mode: 0644
-EOF
-            fi
-
-            # Map architecture names for deb/rpm
-            if [ "${{ matrix.goarch }}" = "amd64" ]; then
-              DEBARCH="amd64"
-              RPMARCH="x86_64"
-            else
-              DEBARCH="arm64"
-              RPMARCH="aarch64"
-            fi
-
-            # Build .deb
-            "$NFPM_BIN" package --packager deb -f nfpm.yaml \
-              --target "upload/${BIN_NAME}_${VERSION}_linux_${DEBARCH}.deb" \
-              --deb-compression gz \
-              --packager-opts "deb.architecture=${DEBARCH}"
-
-            # Build .rpm
-            "$NFPM_BIN" package --packager rpm -f nfpm.yaml \
-              --target "upload/${BIN_NAME}_${VERSION}_linux_${RPMARCH}.rpm" \
-              --packager-opts "rpm.architecture=${RPMARCH}"
-          fi
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+      - name: Set up GoReleaser
+        uses: goreleaser/goreleaser-action@v6
         with:
-          name: driftsync-${{ matrix.goos }}-${{ matrix.goarch }}-${{ env.VERSION }}
-          path: upload/*
-
-  draft-release:
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-
-      - name: Create Draft Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.ref_name }}
-          name: DriftSync ${{ github.ref_name }}
-          body: |
-            Automated draft release for **${{ github.ref_name }}**.
-
-            **Targets**
-            - Linux: amd64 (deb/rpm/tar.gz), arm64 (deb/rpm/tar.gz)
-            - Windows: amd64 (zip), arm64 (zip)
-
-            If a `config.yaml` exists at the repo root, it's bundled:
-            - Linux: installed to `/etc/driftsync/config.yaml` in deb/rpm
-            - Linux tar.gz & Windows zip: included alongside the binary
-
-            > Built by GitHub Actions.
-          draft: true
-          prerelease: false
-          files: |
-            artifacts/**/*
+          version: latest
+          args: release --clean --timeout=60m
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

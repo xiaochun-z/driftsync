@@ -1,0 +1,106 @@
+project_name: driftsync
+
+before:
+  hooks:
+    # 需要的话：在构建前做一些生成动作（例：生成内置版本信息、默认配置等）
+    # - go generate ./...
+
+builds:
+  - id: driftsync
+    main: ./cmd/driftsync
+    env:
+      - CGO_ENABLED=0
+    ldflags:
+      - -s -w
+      # 可选：把版本信息注入到你的包里（修改为你的包路径）
+      # - -X github.com/your/module/internal/version.Version={{.Version}}
+      # - -X github.com/your/module/internal/version.Commit={{.Commit}}
+      # - -X github.com/your/module/internal/version.Date={{.Date}}
+    goos:
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  # Windows 用 zip；Linux 用 tar.gz
+  - id: by_os
+    builds:
+      - driftsync
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    format_overrides:
+      - goos: windows
+        format: zip
+    files:
+      # 读我等额外文件（可选）
+      - LICENSE
+      - README.md
+    extra_files:
+      # 可选：当仓库根目录存在 config.yaml 时，把它一并放入压缩包根目录
+      - glob: config.yaml
+        # GoReleaser 支持把额外文件标记为可选（不存在就忽略）
+        optional: true
+
+nfpms:
+  - id: linux-packages
+    package_name: driftsync
+    # 这里会生成 deb 和 rpm
+    formats: [deb, rpm]
+    section: utils
+    priority: optional
+    license: MIT
+    maintainer: Your Name <you@example.com>
+    description: "DriftSync — fast, reliable drift-aware sync tool."
+    homepage: "https://github.com/xiaochun-z/driftsync"
+    provides:
+      - driftsync
+    conflicts:
+      - driftsync-beta
+    recommends: []
+    depends: []
+    suggests: []
+    # 安装路径：把二进制放到 /usr/bin
+    bindir: /usr/bin
+    contents:
+      # 安装二进制（由 goreleaser 自动指向构建产物）
+      - src: ./dist/{{ .ProjectName }}_{{ .Version }}_linux_{{ .Arch }}/{{ .ProjectName }}
+        dst: /usr/bin/{{ .ProjectName }}
+        file_info:
+          mode: 0755
+
+      # 👉（可选）当你将来真的要把 config.yaml 随包安装到 /etc/driftsync/ 时：
+      # 注意：NFPM 不支持“可选文件”，src 必须存在才能打包。
+      # 所以，等你仓库里加入 config.yaml 后，再取消以下注释即可。
+      # - src: config.yaml
+      #   dst: /etc/driftsync/config.yaml
+      #   type: config # rpm 会标记为 noreplace，用户改动不会被升级覆盖
+      #   file_info:
+      #     mode: 0644
+
+    # 根据架构重命名输出文件
+    formats_overrides:
+      - format: deb
+        file_name_template: >-
+          {{ .ProjectName }}_{{ .Version }}_{{ .Arch }}.deb
+      - format: rpm
+        file_name_template: >-
+          {{ .ProjectName }}-{{ .Version }}.{{ .Arch }}.rpm
+
+release:
+  # 让 goreleaser 直接创建 Draft Release（草稿）
+  draft: true
+  # 为 release 命名（可自定义）
+  name_template: "DriftSync {{ .Version }}"
+  # release notes 可自动生成，也可从 CHANGELOG.md 读取
+  # 替换为 true 则会附上变更列表
+  # changelog:
+  #   use: github
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
