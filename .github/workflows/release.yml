@@ -33,10 +33,12 @@ jobs:
       # - name: Install cross deps
       #   run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
 
-      - name: Set up GoReleaser
+      - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
         with:
           version: latest
-          args: release --clean --timeout=60m
+          args: release --clean --timeout=60m --skip-validate --skip-publish
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GORELEASER_CURRENT_TAG: ${{ github.event.inputs.version }}
+
