@@ -1,0 +1,41 @@
+name: Build DriftSync
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Set up Go
+      uses: actions/setup-go@v4
+      with:
+        go-version: '1.21'
+    
+    - name: Build DriftSync
+      run: |
+        go build -o driftsync ./cmd/driftsync
+        
+    - name: Show file info
+      run: |
+        ls -al driftsync
+        ls -Z driftsync || echo "No SELinux"
+    
+    - name: Test execution
+      run: |
+        chmod +x driftsync
+        ./driftsync
+        echo "SUCCESS: DriftSync runs!"
+    
+    - name: Upload binary
+      uses: actions/upload-artifact@v4
+      with:
+        name: driftsync-binary
+        path: driftsync
