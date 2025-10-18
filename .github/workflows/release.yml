@@ -55,7 +55,7 @@ jobs:
           OUT="${BIN_NAME}${EXT}"
           go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o "dist/${OUT}" ./cmd/driftsync
 
-      - name: Package (Linux: deb/rpm/tar.gz; Windows: zip)
+      - name: Package (Linux deb/rpm/tar.gz; Windows zip)
         shell: bash
         run: |
           set -euo pipefail
