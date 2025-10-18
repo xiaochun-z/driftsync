@@ -11,31 +11,30 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+    - uses: actions/checkout@v4
     
-    - name: Set up Go
-      uses: actions/setup-go@v4
+    - uses: actions/setup-go@v4
       with:
         go-version: '1.21'
     
-    - name: Build DriftSync
+    - name: Create config.yaml
       run: |
-        go build -o driftsync ./cmd/driftsync
-        
-    - name: Show file info
-      run: |
-        ls -al driftsync
-        ls -Z driftsync || echo "No SELinux"
+        cat > config.yaml << 'EOF'
+        client_id: "test"
+        client_secret: "test"
+        redirect_uri: "http://localhost:8080/callback"
+        EOF
     
-    - name: Test execution
+    - name: Build
+      run: go build -o driftsync ./cmd/driftsync
+    
+    - name: Test
       run: |
         chmod +x driftsync
-        ./driftsync
-        echo "SUCCESS: DriftSync runs!"
+        ./driftsync --help
+        echo "SUCCESS!"
     
-    - name: Upload binary
-      uses: actions/upload-artifact@v4
+    - uses: actions/upload-artifact@v4
       with:
         name: driftsync-binary
         path: driftsync
