@@ -1,10 +1,16 @@
 name: Release (multi-OS + deb/rpm, draft)
 
 on:
-  # 打 tag 才发布草稿版；平时 push 不会触发
   push:
     tags:
       - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "手动触发时可指定版本号（例如 v1.2.3）"
+        required: false
+        default: "v0.0.0-dev"
+
 
 permissions:
   contents: write   # 必须：用来创建 release 并上传资产
