@@ -1,10 +1,10 @@
 name: Release (multi-OS + deb/rpm, draft)
 
 on:
+  # 打 tag 才发布草稿版；平时 push 不会触发
   push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
+    tags:
+      - "v*.*.*"
 
 permissions:
   contents: write   # 必须：用来创建 release 并上传资产
