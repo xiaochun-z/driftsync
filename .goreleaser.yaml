@@ -1,14 +1,11 @@
 version: 2
-
 project_name: driftsync
 
 builds:
   - id: driftsync
     main: ./cmd/driftsync
-    env:
-      - CGO_ENABLED=0
-    ldflags:
-      - -s -w
+    env: [CGO_ENABLED=0]
+    ldflags: [-s -w]
     goos: [linux, windows]
     goarch: [amd64, arm64]
 
@@ -22,32 +19,20 @@ archives:
     files:
       - LICENSE
       - README.md
-      # 未来你真的加入 config.yaml 时，再取消注释即可把它打进压缩包
-      # - config.yaml
+      # - config.yaml   # 将来真有再取消注释
 
 nfpms:
   - id: linux-packages
     package_name: driftsync
+    builds: [driftsync]     # 关键：和上面的 build 关联
     formats: [deb, rpm]
+    bindir: /usr/bin        # 二进制会自动安装到这里
     section: utils
     priority: optional
     license: MIT
-    maintainer: Your Name <you@example.com>     # 改成你的
+    maintainer: caden <xiaochun.zh@outlook.com>
     description: "DriftSync — fast, reliable drift-aware sync tool."
-    homepage: "https://github.com/your/repo"    # 改成你的
-    bindir: /usr/bin
-    contents:
-      - src: ./dist/{{ .ProjectName }}_{{ .Version }}_linux_{{ .Arch }}/{{ .ProjectName }}
-        dst: /usr/bin/{{ .ProjectName }}
-        file_info:
-          mode: 0755
-      # 未来将 config.yaml 随包安装到 /etc/driftsync/ 时，再启用下面几行；
-      # 注意：NFPM 要求 src 文件真实存在，否则会报错
-      # - src: config.yaml
-      #   dst: /etc/driftsync/config.yaml
-      #   type: config
-      #   file_info:
-      #     mode: 0644
+    homepage: "https://github.com/xiaochun-z/driftsync"
 
 release:
   draft: true
@@ -56,6 +41,4 @@ release:
 changelog:
   sort: asc
   filters:
-    exclude:
-      - '^docs:'
-      - '^test:'
+    exclude: ['^docs:', '^test:']
