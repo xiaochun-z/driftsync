@@ -65,7 +65,9 @@ func (s *Syncer) cloudDelta(ctx context.Context) error {
 
 	for {
 		d, err := s.g.RootDelta(ctx, s.deltaLink)
-		if err != nil { return err }
+		if err != nil {
+			return err
+		}
 		for _, it := range d.Value {
 			pathRel := s.itemPathRel(it)
 
@@ -78,19 +80,26 @@ func (s *Syncer) cloudDelta(ctx context.Context) error {
 				continue
 			}
 			if it.Folder != nil {
-				if s.filter != nil && !s.filter.ShouldSync(pathRel, true) { continue }
+				if s.filter != nil && !s.filter.ShouldSync(pathRel, true) {
+					continue
+				}
 				lp := filepath.Join(s.cfg.LocalPath, filepath.FromSlash(pathRel))
 				_ = os.MkdirAll(lp, 0o755)
 				cloudAlive[pathRel] = struct{}{}
 				continue
 			}
 			if it.File != nil {
-				if s.filter != nil && !s.filter.ShouldSync(pathRel, false) { continue }
-				toDownload = append(toDownload, dlTask{ ID: it.ID, PathRel: pathRel, Size: it.Size, ETag: it.ETag })
+				if s.filter != nil && !s.filter.ShouldSync(pathRel, false) {
+					continue
+				}
+				toDownload = append(toDownload, dlTask{ID: it.ID, PathRel: pathRel, Size: it.Size, ETag: it.ETag})
 				cloudAlive[pathRel] = struct{}{}
 			}
 		}
-		if d.NextLink != "" { s.deltaLink = d.NextLink; continue }
+		if d.NextLink != "" {
+			s.deltaLink = d.NextLink
+			continue
+		}
 		s.deltaLink = d.DeltaLink
 		break
 	}
@@ -99,7 +108,9 @@ func (s *Syncer) cloudDelta(ctx context.Context) error {
 	dbPaths, err := store.ListAllPaths(ctx, s.db)
 	if err == nil {
 		for _, p := range dbPaths {
-			if s.filter != nil && !s.filter.ShouldSync(p, false) { continue }
+			if s.filter != nil && !s.filter.ShouldSync(p, false) {
+				continue
+			}
 			if _, ok := cloudAlive[p]; !ok {
 				lp := filepath.Join(s.cfg.LocalPath, filepath.FromSlash(p))
 				if _, statErr := os.Stat(lp); statErr == nil {
@@ -112,10 +123,14 @@ func (s *Syncer) cloudDelta(ctx context.Context) error {
 		}
 	}
 
-	if len(toDownload) == 0 { return nil }
+	if len(toDownload) == 0 {
+		return nil
+	}
 
 	workers := s.cfg.DownloadWorkers
-	if workers < 1 { workers = 8 }
+	if workers < 1 {
+		workers = 8
+	}
 
 	jobs := make(chan dlTask, workers*2)
 	done := make(chan struct{})
@@ -127,11 +142,14 @@ func (s *Syncer) cloudDelta(ctx context.Context) error {
 				rel := t.PathRel
 				lp := filepath.Join(s.cfg.LocalPath, filepath.FromSlash(rel))
 				if err := os.MkdirAll(filepath.Dir(lp), 0o755); err != nil {
-					log.Printf("mkdir: %v", err); continue
+					log.Printf("mkdir: %v", err)
+					continue
 				}
 				localHash := ""
 				if _, err := os.Stat(lp); err == nil {
-					if h, err := scan.SHA1File(lp); err == nil { localHash = h }
+					if h, err := scan.SHA1File(lp); err == nil {
+						localHash = h
+					}
 				}
 				dbOld, _ := store.GetByPathFull(ctx, s.db, rel)
 				conflict := false
@@ -147,9 +165,13 @@ func (s *Syncer) cloudDelta(ctx context.Context) error {
 					log.Printf("CONFLICT: keeping both versions for %s; cloud saved as %s", rel, conflictName)
 				}
 				if err := s.g.DownloadTo(ctx, t.ID, targetPath); err != nil {
-					log.Printf("cloud→local FAIL %s: %v", rel, err); continue
+					log.Printf("cloud→local FAIL %s: %v", rel, err)
+					continue
 				}
-				h, herr := scan.SHA1File(targetPath); if herr != nil { h = "" }
+				h, herr := scan.SHA1File(targetPath)
+				if herr != nil {
+					h = ""
+				}
 				_ = store.UpsertItem(ctx, s.db, store.Item{
 					ID: t.ID, PathRel: rel, ETag: t.ETag, Size: t.Size, Mtime: 0,
 					Sha1: h, LastSrc: "cloud", LastSync: time.Now().Unix(),
@@ -161,9 +183,13 @@ func (s *Syncer) cloudDelta(ctx context.Context) error {
 	}
 
 	go func() {
-		for _, t := range toDownload { jobs <- t }
+		for _, t := range toDownload {
+			jobs <- t
+		}
 		close(jobs)
-		for i := 0; i < workers; i++ { <-errCh }
+		for i := 0; i < workers; i++ {
+			<-errCh
+		}
 		close(done)
 	}()
 
@@ -173,29 +199,45 @@ func (s *Syncer) cloudDelta(ctx context.Context) error {
 
 func (s *Syncer) itemPathRel(it graph.DriveItem) string {
 	pp := ""
-	if it.ParentReference != nil { pp = it.ParentReference.Path }
+	if it.ParentReference != nil {
+		pp = it.ParentReference.Path
+	}
 	pp = strings.TrimPrefix(pp, "/drive/root:")
-	if pp == "" { pp = "/" }
-	if pp == "/" { return it.Name }
+	if pp == "" {
+		pp = "/"
+	}
+	if pp == "/" {
+		return it.Name
+	}
 	return strings.TrimPrefix(pp+"/"+it.Name, "/")
 }
 
 func (s *Syncer) localScanAndUpload(ctx context.Context) error {
 	en, err := scan.ScanDir(s.cfg.LocalPath)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 
 	cur := map[string]scan.Entry{}
 	type upTask struct{ E scan.Entry }
 	var toUpload []upTask
 
 	for _, e := range en {
-		if e.IsDir { continue }
-		if s.filter != nil && !s.filter.ShouldSync(e.PathRel, false) { continue }
-		if until, ok := s.recently[e.PathRel]; ok && until > time.Now().Unix() { continue }
+		if e.IsDir {
+			continue
+		}
+		if s.filter != nil && !s.filter.ShouldSync(e.PathRel, false) {
+			continue
+		}
+		if until, ok := s.recently[e.PathRel]; ok && until > time.Now().Unix() {
+			continue
+		}
 		cur[e.PathRel] = e
 
 		prev, ok := s.lastLocal[e.PathRel]
-		if ok && e.Mtime == prev.Mtime && e.Size == prev.Size { continue }
+		if ok && e.Mtime == prev.Mtime && e.Size == prev.Size {
+			continue
+		}
 		toUpload = append(toUpload, upTask{E: e})
 	}
 	if len(toUpload) == 0 {
@@ -204,7 +246,9 @@ func (s *Syncer) localScanAndUpload(ctx context.Context) error {
 	}
 
 	workers := s.cfg.UploadWorkers
-	if workers < 1 { workers = 8 }
+	if workers < 1 {
+		workers = 8
+	}
 
 	jobs := make(chan upTask, workers*2)
 	done := make(chan struct{})
@@ -219,18 +263,22 @@ func (s *Syncer) localScanAndUpload(ctx context.Context) error {
 
 				h, _ := scan.SHA1File(lp)
 				if old, err := store.GetByPathFull(ctx, s.db, e.PathRel); err == nil {
-					if h != "" && h == old.Sha1 { continue }
+					if h != "" && h == old.Sha1 {
+						continue
+					}
 					if old.ETag != "" {
 						if it, err := s.g.GetItemByPath(ctx, rel); err == nil && it.ETag != "" && it.ETag != old.ETag && old.Sha1 != "" && h != old.Sha1 {
 							conflictRel := "/" + conflictName(e.PathRel, "local-conflict")
 							log.Printf("CONFLICT: both changed; uploading local as %s", conflictRel)
 							if e.Size <= 4*1024*1024 {
 								if _, err := s.g.UploadSmall(ctx, conflictRel, lp); err != nil {
-									log.Printf("local→cloud FAIL %s: %v", e.PathRel, err); continue
+									log.Printf("local→cloud FAIL %s: %v", e.PathRel, err)
+									continue
 								}
 							} else {
 								if _, err := s.g.UploadLarge(ctx, conflictRel, lp, s.cfg.UploadChunkMB, s.cfg.UploadParallel); err != nil {
-									log.Printf("local→cloud FAIL %s: %v", e.PathRel, err); continue
+									log.Printf("local→cloud FAIL %s: %v", e.PathRel, err)
+									continue
 								}
 							}
 							s.recently[e.PathRel] = time.Now().Add(60 * time.Second).Unix()
@@ -262,9 +310,13 @@ func (s *Syncer) localScanAndUpload(ctx context.Context) error {
 	}
 
 	go func() {
-		for _, t := range toUpload { jobs <- t }
+		for _, t := range toUpload {
+			jobs <- t
+		}
 		close(jobs)
-		for i := 0; i < workers; i++ { <-errCh }
+		for i := 0; i < workers; i++ {
+			<-errCh
+		}
 		close(done)
 	}()
 
@@ -276,27 +328,41 @@ func (s *Syncer) localScanAndUpload(ctx context.Context) error {
 func (s *Syncer) localDetectAndDeleteCloud(ctx context.Context) error {
 	cur := map[string]struct{}{}
 	en, err := scan.ScanDir(s.cfg.LocalPath)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	for _, e := range en {
-		if e.IsDir { continue }
-		if s.filter != nil && !s.filter.ShouldSync(e.PathRel, false) { continue }
+		if e.IsDir {
+			continue
+		}
+		if s.filter != nil && !s.filter.ShouldSync(e.PathRel, false) {
+			continue
+		}
 		cur[e.PathRel] = struct{}{}
 	}
 
 	rows, err := s.db.QueryContext(ctx, `SELECT path_rel FROM items`)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	defer rows.Close()
 
 	var toDelete []string
 	for rows.Next() {
 		var pathRel string
-		if err := rows.Scan(&pathRel); err != nil { return err }
-		if s.filter != nil && !s.filter.ShouldSync(pathRel, false) { continue }
+		if err := rows.Scan(&pathRel); err != nil {
+			return err
+		}
+		if s.filter != nil && !s.filter.ShouldSync(pathRel, false) {
+			continue
+		}
 		if _, ok := cur[pathRel]; !ok {
 			toDelete = append(toDelete, pathRel)
 		}
 	}
-	if err := rows.Err(); err != nil { return err }
+	if err := rows.Err(); err != nil {
+		return err
+	}
 
 	for _, rel := range toDelete {
 		graphPath := "/" + rel

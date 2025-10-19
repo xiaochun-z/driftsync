@@ -2,12 +2,15 @@ package store
 
 import (
 	"database/sql"
+
 	_ "modernc.org/sqlite"
 )
 
 func Open(path string) (*sql.DB, error) {
 	db, err := sql.Open("sqlite", path)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	if _, err := db.Exec(`
 CREATE TABLE IF NOT EXISTS tokens (
 	id INTEGER PRIMARY KEY,
@@ -26,6 +29,8 @@ CREATE TABLE IF NOT EXISTS items (
 	last_sync INTEGER
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_items_path ON items(path_rel);
-`); err != nil { return nil, err }
+`); err != nil {
+		return nil, err
+	}
 	return db, nil
 }

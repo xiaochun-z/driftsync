@@ -38,12 +38,16 @@ func GetByPathFull(ctx context.Context, db *sql.DB, pathRel string) (*Item, erro
 
 func ListAllPaths(ctx context.Context, db *sql.DB) ([]string, error) {
 	rows, err := db.QueryContext(ctx, `SELECT path_rel FROM items`)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	defer rows.Close()
 	var out []string
 	for rows.Next() {
 		var p string
-		if err := rows.Scan(&p); err != nil { return nil, err }
+		if err := rows.Scan(&p); err != nil {
+			return nil, err
+		}
 		out = append(out, p)
 	}
 	return out, rows.Err()

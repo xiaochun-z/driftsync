@@ -23,7 +23,7 @@ func (s *TokenStore) Load(ctx context.Context) (*Tokens, error) {
 	if err := row.Scan(&a, &r, &exp); err != nil {
 		return nil, err
 	}
-	return &Tokens{AccessToken: a, RefreshToken: r, ExpiresAt: time.Unix(exp,0)}, nil
+	return &Tokens{AccessToken: a, RefreshToken: r, ExpiresAt: time.Unix(exp, 0)}, nil
 }
 
 func (s *TokenStore) Save(ctx context.Context, t *Tokens) error {

@@ -49,31 +49,61 @@ func FromEnvFallback() *Config {
 }
 
 func (c *Config) ApplyEnvOverrides() {
-	if v := os.Getenv("DRIFTSYNC_TENANT"); v != "" { c.Tenant = v }
-	if v := os.Getenv("DRIFTSYNC_CLIENT_ID"); v != "" { c.ClientID = v }
-	if v := os.Getenv("DRIFTSYNC_LOCAL_PATH"); v != "" { c.LocalPath = v }
-	if v := os.Getenv("DRIFTSYNC_SYNC_LIST"); v != "" { c.SyncListPath = v }
+	if v := os.Getenv("DRIFTSYNC_TENANT"); v != "" {
+		c.Tenant = v
+	}
+	if v := os.Getenv("DRIFTSYNC_CLIENT_ID"); v != "" {
+		c.ClientID = v
+	}
+	if v := os.Getenv("DRIFTSYNC_LOCAL_PATH"); v != "" {
+		c.LocalPath = v
+	}
+	if v := os.Getenv("DRIFTSYNC_SYNC_LIST"); v != "" {
+		c.SyncListPath = v
+	}
 	if v := os.Getenv("DRIFTSYNC_DOWNLOAD_WORKERS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil { c.DownloadWorkers = n }
+		if n, err := strconv.Atoi(v); err == nil {
+			c.DownloadWorkers = n
+		}
 	}
 	if v := os.Getenv("DRIFTSYNC_UPLOAD_WORKERS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil { c.UploadWorkers = n }
+		if n, err := strconv.Atoi(v); err == nil {
+			c.UploadWorkers = n
+		}
 	}
 	if v := os.Getenv("DRIFTSYNC_UPLOAD_CHUNK_MB"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil { c.UploadChunkMB = n }
+		if n, err := strconv.Atoi(v); err == nil {
+			c.UploadChunkMB = n
+		}
 	}
 	if v := os.Getenv("DRIFTSYNC_UPLOAD_PARALLEL"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil { c.UploadParallel = n }
+		if n, err := strconv.Atoi(v); err == nil {
+			c.UploadParallel = n
+		}
 	}
 }
 
 func (c *Config) Validate() error {
-	if c.ClientID == "" { return fmt.Errorf("client_id is required") }
-	if c.LocalPath == "" { return fmt.Errorf("local_path is required") }
-	if c.DownloadWorkers <= 0 { c.DownloadWorkers = 8 }
-	if c.UploadWorkers <= 0 { c.UploadWorkers = 8 }
-	if c.UploadChunkMB <= 0 { c.UploadChunkMB = 8 }
-	if c.UploadParallel <= 0 { c.UploadParallel = 2 }
-	if c.UploadParallel > 4 { c.UploadParallel = 4 }
+	if c.ClientID == "" {
+		return fmt.Errorf("client_id is required")
+	}
+	if c.LocalPath == "" {
+		return fmt.Errorf("local_path is required")
+	}
+	if c.DownloadWorkers <= 0 {
+		c.DownloadWorkers = 8
+	}
+	if c.UploadWorkers <= 0 {
+		c.UploadWorkers = 8
+	}
+	if c.UploadChunkMB <= 0 {
+		c.UploadChunkMB = 8
+	}
+	if c.UploadParallel <= 0 {
+		c.UploadParallel = 2
+	}
+	if c.UploadParallel > 4 {
+		c.UploadParallel = 4
+	}
 	return nil
 }
