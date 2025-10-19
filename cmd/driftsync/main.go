@@ -2,7 +2,10 @@ package main
 
 import (
 	"context"
+	"flag"
 	"log"
+	"os"
+	"path/filepath"
 
 	"github.com/xiaochun-z/driftsync/internal/auth"
 	"github.com/xiaochun-z/driftsync/internal/config"
@@ -11,21 +14,40 @@ import (
 	"github.com/xiaochun-z/driftsync/internal/syncer"
 )
 
-var version = "v0.6"
+var version = "v0.61"
 
 func main() {
-	cfg, err := config.Load("config.yaml")
+	cfgPathFlag := flag.String("config", "", "Path to configuration YAML (optional)")
+	flag.Parse()
+
+	cfgPath := *cfgPathFlag
+	if cfgPath == "" {
+		cfgPath = "config.yaml"
+	}
+
+	// Verify config file existence
+	if _, err := os.Stat(cfgPath); os.IsNotExist(err) {
+		log.Fatalf("Config file not found: %s", cfgPath)
+	}
+
+	// Load configuration
+	cfg, err := config.Load(cfgPath)
 	if err != nil {
-		log.Printf("config.yaml not found or invalid: %v", err)
-		cfg = config.FromEnvFallback()
+		log.Fatalf("Failed to load config %s: %v", cfgPath, err)
 	}
 	if err := cfg.Validate(); err != nil {
-		log.Fatalf("config invalid: %v", err)
+		log.Fatalf("Config invalid: %v", err)
 	}
-	log.Printf("DriftSync %s (one-shot) starting. local_path=%s tenant=%s", version, cfg.LocalPath, cfg.Tenant)
 
-	db, err := store.Open("driftsync.db")
-	if err != nil { log.Fatalf("open db: %v", err) }
+	log.Printf("DriftSync %s (one-shot) starting. config=%s local_path=%s tenant=%s",
+		version, cfgPath, cfg.LocalPath, cfg.Tenant)
+
+	// Database in same directory as config.yaml
+	dbPath := filepath.Join(filepath.Dir(cfgPath), "driftsync.db")
+	db, err := store.Open(dbPath)
+	if err != nil {
+		log.Fatalf("open db: %v", err)
+	}
 	defer db.Close()
 
 	tokStore := store.NewTokenStore(db)
@@ -44,5 +66,6 @@ func main() {
 	if err := s.SyncOnce(ctx); err != nil {
 		log.Fatalf("sync error: %v", err)
 	}
-	log.Println("Sync completed. Exiting.")
+
+	log.Printf("Sync completed. Database stored at: %s", dbPath)
 }
