@@ -1,4 +1,3 @@
-
 package graph
 
 import (
@@ -6,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -59,7 +57,6 @@ func (c *Client) RootDelta(ctx context.Context, deltaLink string) (*DeltaRespons
 	return &d, nil
 }
 
-// escapePathSegments encodes each segment but keeps "/" separators.
 func escapePathSegments(rel string) string {
 	if rel == "" || rel == "/" { return "/" }
 	parts := strings.Split(rel, "/")
@@ -119,7 +116,6 @@ func (c *Client) DownloadTo(ctx context.Context, itemID, destPath string) error 
 
 	plain := &http.Client{}
 	req2, _ := http.NewRequestWithContext(ctx, "GET", dl, nil)
-	log.Printf("downloading to %s", destPath)
 	resp2, err := plain.Do(req2)
 	if err != nil { return err }
 	defer resp2.Body.Close()
@@ -135,7 +131,6 @@ func (c *Client) DownloadTo(ctx context.Context, itemID, destPath string) error 
 	return err
 }
 
-// UploadSmall uses simple PUT to root:{path}:/content (<= 4MiB recommended).
 func (c *Client) UploadSmall(ctx context.Context, relPath string, localPath string) (*DriveItem, error) {
 	safe := escapePathSegments(relPath)
 	u := fmt.Sprintf("%s/me/drive/root:%s:/content", c.Base, safe)
@@ -156,24 +151,20 @@ func (c *Client) UploadSmall(ctx context.Context, relPath string, localPath stri
 	return &it, nil
 }
 
-// UploadLarge uses createUploadSession + chunked PUT with Content-Range.
 func (c *Client) UploadLarge(ctx context.Context, relPath, localPath string, chunkMB, parallel int) (*DriveItem, error) {
 	if chunkMB <= 0 { chunkMB = 8 }
 	if parallel <= 0 { parallel = 2 }
 	if parallel > 4 { parallel = 4 }
 	safe := escapePathSegments(relPath)
 
-	// 1) Create upload session
 	sessURL, err := c.createUploadSession(ctx, safe)
 	if err != nil { return nil, err }
 
-	// 2) Open file
 	stat, err := os.Stat(localPath)
 	if err != nil { return nil, err }
 	size := stat.Size()
 	chunk := int64(chunkMB) * 1024 * 1024
 
-	// 3) Build parts
 	type part struct{ Start, End int64 }
 	var parts []part
 	for s := int64(0); s < size; s += chunk {
@@ -182,7 +173,6 @@ func (c *Client) UploadLarge(ctx context.Context, relPath, localPath string, chu
 		parts = append(parts, part{Start: s, End: e})
 	}
 
-	// 4) Worker pool uploads parts (out-of-order is fine)
 	type result struct {
 		Item *DriveItem
 		Err  error
@@ -194,7 +184,6 @@ func (c *Client) UploadLarge(ctx context.Context, relPath, localPath string, chu
 	worker := func() {
 		defer wg.Done()
 		for p := range jobs {
-			// Read slice for this part
 			f, err := os.Open(localPath)
 			if err != nil { resc <- result{Err: err}; continue }
 			if _, err := f.Seek(p.Start, io.SeekStart); err != nil { f.Close(); resc <- result{Err: err}; continue }
@@ -210,7 +199,6 @@ func (c *Client) UploadLarge(ctx context.Context, relPath, localPath string, chu
 				if err == nil && (resp.StatusCode == 200 || resp.StatusCode == 201 || resp.StatusCode == 202) {
 					break
 				}
-				// Backoff on transient codes
 				if resp != nil && (resp.StatusCode == 429 || resp.StatusCode >= 500) {
 					time.Sleep(time.Duration(1<<attempt) * 200 * time.Millisecond)
 					continue
@@ -226,7 +214,6 @@ func (c *Client) UploadLarge(ctx context.Context, relPath, localPath string, chu
 			resp.Body.Close()
 			f.Close()
 
-			// 202 => accepted (in progress); 200/201 => completed with DriveItem
 			if resp.StatusCode == 200 || resp.StatusCode == 201 {
 				var it DriveItem
 				if err := json.Unmarshal(body, &it); err == nil && it.ID != "" {
@@ -234,7 +221,6 @@ func (c *Client) UploadLarge(ctx context.Context, relPath, localPath string, chu
 					continue
 				}
 			}
-			// Not completed yet
 			resc <- result{Item: nil, Err: nil}
 		}
 	}
@@ -254,7 +240,6 @@ func (c *Client) UploadLarge(ctx context.Context, relPath, localPath string, chu
 		if r.Item != nil { lastItem = r.Item }
 	}
 	if lastItem == nil {
-		// If none returned item, query session (rare). Best-effort finalization by requesting item path.
 		it, err := c.GetItemByPath(ctx, safe)
 		if err == nil { return it, nil }
 		return nil, fmt.Errorf("upload session finished without final item response")

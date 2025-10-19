@@ -1,9 +1,9 @@
 tenant: consumers
-client_id: "<REPLACE_WITH_AAD_APP_CLIENT_ID>"
-local_path: "<REPLACE_WITH_LOCAL_ABSOLUTE_PATH>"
+client_id: "3ae224c9-f16c-42d1-bf5d-44151f2b99fa" # you can replace it with your own azure app for better security, but you need to create the app in portal.azure.com
+local_path: "<REPLACE_WITH_LOCAL_ABSOLUTE_PATH>" # example: "/var/data/repos/onedrive_root/"
 download_from_cloud: true
 upload_from_local: true
-sync_list_path: ""          # leave empty to sync everything
+sync_list_path: "" # example: "/var/data/repos/driftsync/sync_list"   # leave empty to sync everything
 download_workers: 8
 upload_workers: 8
 upload_chunk_mb: 8

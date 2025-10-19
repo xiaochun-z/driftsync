@@ -11,6 +11,8 @@ import (
 	"github.com/xiaochun-z/driftsync/internal/syncer"
 )
 
+var version = "v0.6"
+
 func main() {
 	cfg, err := config.Load("config.yaml")
 	if err != nil {
@@ -20,7 +22,7 @@ func main() {
 	if err := cfg.Validate(); err != nil {
 		log.Fatalf("config invalid: %v", err)
 	}
-	log.Printf("DriftSync v0.5 (one-shot) starting. local_path=%s tenant=%s", cfg.LocalPath, cfg.Tenant)
+	log.Printf("DriftSync %s (one-shot) starting. local_path=%s tenant=%s", version, cfg.LocalPath, cfg.Tenant)
 
 	db, err := store.Open("driftsync.db")
 	if err != nil { log.Fatalf("open db: %v", err) }
