@@ -15,6 +15,8 @@ You are strongly advised to maintain your own independent backups of all importa
 By using this software, you acknowledge and agree that DriftSync, its contributors, and maintainers assume no responsibility or liability for any data loss, corruption, or other damages arising from its use.
 If you do not agree with these terms, do not use this program.
 
+![request access](screenshots/request-access.png)
+![DriftSync](screenshots/DriftSync.png)
 ---
 
 ## Key Features
