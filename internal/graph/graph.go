@@ -146,7 +146,7 @@ func (c *Client) DownloadTo(ctx context.Context, itemID, destPath string) error 
 		return fmt.Errorf("no @microsoft.graph.downloadUrl on item %s", itemID)
 	}
 
-	plain := &http.Client{}
+	plain := &http.Client{Timeout: 120 * time.Second} // SECURITY: add timeout to avoid hanging requests
 	req2, _ := http.NewRequestWithContext(ctx, "GET", dl, nil)
 	resp2, err := plain.Do(req2)
 	if err != nil {

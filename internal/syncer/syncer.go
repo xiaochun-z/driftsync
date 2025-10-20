@@ -147,7 +147,7 @@ func (s *Syncer) cloudDelta(ctx context.Context) error {
 				}
 				localHash := ""
 				if _, err := os.Stat(lp); err == nil {
-					if h, err := scan.SHA1File(lp); err == nil {
+					if h, err := scan.HashFile(lp); err == nil {
 						localHash = h
 					}
 				}
@@ -168,7 +168,7 @@ func (s *Syncer) cloudDelta(ctx context.Context) error {
 					log.Printf("cloud→local FAIL %s: %v", rel, err)
 					continue
 				}
-				h, herr := scan.SHA1File(targetPath)
+				h, herr := scan.HashFile(targetPath)
 				if herr != nil {
 					h = ""
 				}
@@ -261,7 +261,7 @@ func (s *Syncer) localScanAndUpload(ctx context.Context) error {
 				rel := "/" + e.PathRel
 				lp := filepath.Join(s.cfg.LocalPath, filepath.FromSlash(e.PathRel))
 
-				h, _ := scan.SHA1File(lp)
+				h, _ := scan.HashFile(lp)
 				if old, err := store.GetByPathFull(ctx, s.db, e.PathRel); err == nil {
 					if h != "" && h == old.Sha1 {
 						continue
