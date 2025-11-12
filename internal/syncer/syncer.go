@@ -318,7 +318,6 @@ func (s *Syncer) localScanAndUpload(ctx context.Context) error {
 					}
 				}
 
-				log.Printf("local→cloud PUT %s (%d bytes)", e.PathRel, e.Size)
 				var it *graph.DriveItem
 				var err error
 				if e.Size <= 4*1024*1024 {
