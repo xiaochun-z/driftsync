@@ -8,12 +8,14 @@ download_workers: 8
 upload_workers: 8
 upload_chunk_mb: 8
 upload_parallel: 2
+log:
+  list_checked: true   # output details
 
 sync:
   include:
-    # - "/docs"       # 根下的 docs 目录及其子项
-    # - "*.md"        # 任意位置的 .md 文件
-    # - "images/*"    # 任意目录名为 images 的子树
+    # - "/docs"       # `docs` under root
+    # - "*.md"        # `.md` file in any place
+    # - "images/*"    # `images` in any sub folder
   exclude:
     # - "*.tmp"
-    # - "/build"      # 根下的 build 目录
+    # - "/build"      # `build` in root folder

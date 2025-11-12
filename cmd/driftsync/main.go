@@ -14,7 +14,7 @@ import (
 	"github.com/xiaochun-z/driftsync/internal/syncer"
 )
 
-var version = "v0.7.0"
+var version = "v0.7.1"
 
 func main() {
 	cfgPathFlag := flag.String("config", "", "Path to configuration YAML (optional)")

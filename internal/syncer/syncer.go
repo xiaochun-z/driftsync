@@ -56,6 +56,7 @@ func (s *Syncer) SyncOnce(ctx context.Context) error {
 			log.Printf("cloud delta err: %v", err)
 		}
 	}
+	s.printSummary()
 	return nil
 }
 
@@ -184,6 +185,7 @@ func (s *Syncer) cloudDelta(ctx context.Context) error {
 					Sha1: h, LastSrc: "cloud", LastSync: time.Now().Unix(),
 				})
 				s.recently[rel] = time.Now().Add(90 * time.Second).Unix()
+				s.trackDownloaded(rel)
 			}
 			errCh <- nil
 		}()
@@ -239,6 +241,7 @@ func (s *Syncer) localScanAndUpload(ctx context.Context) error {
 		if until, ok := s.recently[e.PathRel]; ok && until > time.Now().Unix() {
 			continue
 		}
+		s.trackChecked(e.PathRel)
 		cur[e.PathRel] = e
 
 		prev, ok := s.lastLocal[e.PathRel]
@@ -311,6 +314,7 @@ func (s *Syncer) localScanAndUpload(ctx context.Context) error {
 					Sha1: h, LastSrc: "local", LastSync: time.Now().Unix(),
 				})
 				s.recently[e.PathRel] = time.Now().Add(60 * time.Second).Unix()
+				s.trackUploaded(e.PathRel)
 			}
 			errCh <- nil
 		}()
@@ -391,4 +395,23 @@ func conflictName(pathRel, tag string) string {
 	base := strings.TrimSuffix(filepath.Base(pathRel), ext)
 	name := base + "." + tag + "-" + time.Now().UTC().Format("20060102-150405") + ext
 	return strings.TrimPrefix(filepath.Join(filepath.Dir(pathRel), name), "/")
+}
+
+func (s *Syncer) trackChecked(rel string) {
+	if s.cfg.Log != nil && s.cfg.Log.ListChecked {
+		log.Printf("[check] %s", rel)
+	}
+}
+
+func (s *Syncer) trackUploaded(rel string) {
+	log.Printf("[uploaded] %s", rel)
+}
+
+func (s *Syncer) trackDownloaded(rel string) {
+	log.Printf("[downloaded] %s", rel)
+}
+
+func (s *Syncer) printSummary() {
+	log.Printf("==== SUMMARY ====")
+	log.Printf("You can check the lines marked [uploaded] and [downloaded] to see which files were changed in this round; lines marked [check] indicate the files that were inspected.")
 }

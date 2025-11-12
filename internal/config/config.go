@@ -21,11 +21,16 @@ type Config struct {
 	UploadParallel    int    `yaml:"upload_parallel"`
 
 	Sync *SelectiveYAML `yaml:"sync,omitempty"`
+	Log  *LogOptions    `yaml:"log,omitempty"`
 }
 
 type SelectiveYAML struct {
 	Include []string `yaml:"include,omitempty"`
 	Exclude []string `yaml:"exclude,omitempty"`
+}
+
+type LogOptions struct {
+	ListChecked bool `yaml:"list_checked"`
 }
 
 func Load(path string) (*Config, error) {
