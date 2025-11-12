@@ -75,13 +75,28 @@ func Load(path string) (*List, error) {
 }
 
 func (l *List) ShouldSync(pathRel string, isDir bool) bool {
-	if !l.HasRules {
+	if l == nil || !l.HasRules {
+		// no rules -> allow everything
 		return true
 	}
-	p := "/" + strings.ReplaceAll(pathRel, "\\", "/")
+
+	// Normalize: use forward slashes, strip leading "/", then force leading "/"
+	rel := strings.ReplaceAll(pathRel, "\\", "/")
+	rel = strings.TrimLeft(rel, "/")
+
+	// For directories, ensure trailing "/" so absolute prefix rules match subtree
+	if isDir {
+		rel = strings.TrimRight(rel, "/") + "/"
+	}
+
+	p := "/" + rel
+
+	// Exclude first
 	if l.matchExclude(p) {
 		return false
 	}
+
+	// If there are include rules, require a match; otherwise allow
 	if len(l.IncludeAbs)+len(l.IncludeAnywhere) > 0 {
 		return l.matchInclude(p)
 	}
