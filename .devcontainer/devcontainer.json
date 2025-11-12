@@ -1,9 +1,10 @@
 {
-  "name": "driftsync (Go 1.22)",
+  "name": "driftsync",
   "build": {
     "dockerfile": "Dockerfile"
   },
   "remoteUser": "vscode",
+  "runArgs": ["--name", "driftsync-dev"],
   "customizations": {
     "vscode": {
       "settings": {

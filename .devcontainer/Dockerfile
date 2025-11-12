@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/devcontainers/go:1-1.22-bookworm
+FROM mcr.microsoft.com/devcontainers/go:dev-1-bookworm
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
