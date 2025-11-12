@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/xiaochun-z/driftsync/internal/config"
@@ -17,13 +18,16 @@ import (
 )
 
 type Syncer struct {
-	cfg       *config.Config
-	db        *sql.DB
-	g         *graph.Client
-	deltaLink string
-	lastLocal map[string]scan.Entry
-	filter    *selective.List
-	recently  map[string]int64
+	cfg        *config.Config
+	db         *sql.DB
+	g          *graph.Client
+	deltaLink  string
+	lastLocal  map[string]scan.Entry
+	filter     *selective.List
+	recently   map[string]int64
+	mu         sync.Mutex
+	uploaded   []string
+	downloaded []string
 }
 
 func NewSyncer(cfg *config.Config, db *sql.DB, g *graph.Client) *Syncer {
@@ -37,8 +41,10 @@ func NewSyncer(cfg *config.Config, db *sql.DB, g *graph.Client) *Syncer {
 
 	return &Syncer{
 		cfg: cfg, db: db, g: g, filter: f,
-		lastLocal: map[string]scan.Entry{},
-		recently:  map[string]int64{},
+		lastLocal:  map[string]scan.Entry{},
+		recently:   map[string]int64{},
+		uploaded:   []string{},
+		downloaded: []string{},
 	}
 }
 
@@ -397,21 +403,56 @@ func conflictName(pathRel, tag string) string {
 	return strings.TrimPrefix(filepath.Join(filepath.Dir(pathRel), name), "/")
 }
 
+// 只在需要时打印检查日志；不计入最终清单
 func (s *Syncer) trackChecked(rel string) {
 	if s.cfg.Log != nil && s.cfg.Log.ListChecked {
 		log.Printf("[check] %s", rel)
 	}
 }
 
+// 成功上传后记录
 func (s *Syncer) trackUploaded(rel string) {
-	log.Printf("[uploaded] %s", rel)
+	s.mu.Lock()
+	s.uploaded = append(s.uploaded, rel)
+	s.mu.Unlock()
+	log.Printf("[upload] %s", rel)
 }
 
+// 成功下载后记录
 func (s *Syncer) trackDownloaded(rel string) {
-	log.Printf("[downloaded] %s", rel)
+	s.mu.Lock()
+	s.downloaded = append(s.downloaded, rel)
+	s.mu.Unlock()
+	log.Printf("[download] %s", rel)
 }
 
+// 在 SyncOnce 末尾调用：仅汇总“真正修改过”的文件
 func (s *Syncer) printSummary() {
+	// 快照一下，避免持锁打印
+	s.mu.Lock()
+	ups := append([]string(nil), s.uploaded...)
+	dls := append([]string(nil), s.downloaded...)
+	// 清空，为下一轮做准备（可选）
+	s.uploaded = s.uploaded[:0]
+	s.downloaded = s.downloaded[:0]
+	s.mu.Unlock()
+
 	log.Printf("==== SUMMARY ====")
-	log.Printf("You can check the lines marked [uploaded] and [downloaded] to see which files were changed in this round; lines marked [check] indicate the files that were inspected.")
+
+	if len(ups) == 0 && len(dls) == 0 {
+		log.Printf("No file changes this round.")
+		return
+	}
+	if len(ups) > 0 {
+		log.Printf("Uploaded (%d):", len(ups))
+		for _, p := range ups {
+			log.Printf("  %s", p)
+		}
+	}
+	if len(dls) > 0 {
+		log.Printf("Downloaded (%d):", len(dls))
+		for _, p := range dls {
+			log.Printf("  %s", p)
+		}
+	}
 }
