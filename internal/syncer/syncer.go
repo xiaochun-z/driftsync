@@ -34,14 +34,31 @@ type Syncer struct {
 func NewSyncer(cfg *config.Config, db *sql.DB, g *graph.Client) *Syncer {
 	var f *selective.List
 
-	if cfg.Sync != nil && (len(cfg.Sync.Include) > 0 || len(cfg.Sync.Exclude) > 0) {
+	if cfg.Sync != nil {
 		f = selective.FromYAML(cfg.Sync.Include, cfg.Sync.Exclude)
 	} else {
-		f, _ = selective.Load(cfg.SyncListPath)
+		if strings.TrimSpace(cfg.SyncListPath) != "" {
+			if lf, err := selective.Load(cfg.SyncListPath); err == nil {
+				f = lf
+			} else {
+				log.Printf("WARN: load sync_list_path failed: %v", err)
+			}
+		}
+	}
+
+	if f == nil || !f.HasRules {
+		log.Printf("Selective sync: OFF (no rules).")
+	} else if cfg.Sync != nil {
+		log.Printf("Selective sync (YAML): include=%v exclude=%v", cfg.Sync.Include, cfg.Sync.Exclude)
+	} else {
+		log.Printf("Selective sync (text list): %s", cfg.SyncListPath)
 	}
 
 	return &Syncer{
-		cfg: cfg, db: db, g: g, filter: f,
+		cfg:        cfg,
+		db:         db,
+		g:          g,
+		filter:     f,
 		lastLocal:  map[string]scan.Entry{},
 		recently:   map[string]int64{},
 		uploaded:   []string{},
