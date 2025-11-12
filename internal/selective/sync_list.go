@@ -130,6 +130,21 @@ func prefixMatch(p, rule string) bool {
 }
 
 func matchAnywhere(full, base, rule string) bool {
+
+	// Case A: multi-segment directory rule ending with "/"
+	// e.g. "obsidian/.obsidian/" should match any path containing "/obsidian/.obsidian/".
+	if strings.HasSuffix(rule, "/") && !strings.HasSuffix(rule, "/*") {
+		r := rule
+		// ensure leading "/", so we can search segment-safe substring
+		if !strings.HasPrefix(r, "/") {
+			r = "/" + r
+		}
+		// match as directory prefix anywhere (segment-safe, requires trailing "/")
+		if strings.Contains(full, r) {
+			return true
+		}
+	}
+
 	if strings.HasSuffix(rule, "/*") {
 		dir := strings.TrimSuffix(rule, "/*")
 		parts := strings.Split(strings.Trim(full, "/"), "/")

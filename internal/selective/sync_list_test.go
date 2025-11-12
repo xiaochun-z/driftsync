@@ -99,3 +99,48 @@ func TestYAML_IncludeDocs_ExcludeWorkJson(t *testing.T) {
 		t.Fatalf("docs/sub/work.json should be included (exclude only targets /docs/work.json)")
 	}
 }
+
+//  1. YAML: include "obsidian", exclude "obsidian/.obsidian/"
+//     期望：工作区配置文件被排除；普通笔记允许同步。
+func TestFromYAML_ExcludeNestedHiddenDir(t *testing.T) {
+	l := FromYAML(
+		[]string{"obsidian"},            // include
+		[]string{"obsidian/.obsidian/"}, // exclude (directory rule)
+	)
+
+	// 被排除的隐藏配置目录下的文件
+	if l.ShouldSync("obsidian/.obsidian/workspace.json", false) {
+		t.Fatalf("should exclude obsidian/.obsidian/*")
+	}
+	// 允许的普通内容
+	if !l.ShouldSync("obsidian/Note.md", false) {
+		t.Fatalf("should include obsidian/Note.md")
+	}
+}
+
+//  2. 纯文本 sync_list：验证与 YAML 一致的语义。
+//     文件内容模拟：
+//     obsidian
+//     -obsidian/.obsidian/
+func TestTextList_ExcludeNestedHiddenDir(t *testing.T) {
+	tmp := t.TempDir()
+	path := tmp + "/sync_list"
+
+	content := "obsidian\n" + // include anywhere
+		"-obsidian/.obsidian/\n" // exclude anywhere (directory)
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	l, err := Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	if l.ShouldSync("obsidian/.obsidian/workspace.json", false) {
+		t.Fatalf("should exclude obsidian/.obsidian/* from text list")
+	}
+	if !l.ShouldSync("obsidian/Note.md", false) {
+		t.Fatalf("should include obsidian/Note.md from text list")
+	}
+}
