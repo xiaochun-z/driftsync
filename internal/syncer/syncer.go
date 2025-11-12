@@ -128,8 +128,8 @@ func (s *Syncer) cloudDelta(ctx context.Context) error {
 			if _, ok := cloudAlive[p]; !ok {
 				lp := filepath.Join(s.cfg.LocalPath, filepath.FromSlash(p))
 				if _, statErr := os.Stat(lp); statErr == nil {
-					log.Printf("cloud→local DELETE %s (not in cloud)", p)
 					_ = os.Remove(lp)
+					s.trackDeleted(p)
 				}
 				_ = store.DeleteByPath(ctx, s.db, p)
 				delete(s.recently, p)
@@ -202,7 +202,7 @@ func (s *Syncer) cloudDelta(ctx context.Context) error {
 				s.recently[rel] = time.Now().Add(90 * time.Second).Unix()
 
 				if changed {
-					s.trackDownloaded(rel) // 只在有变更时打 [downloaded]
+					s.trackDownloaded(rel, t.Size)
 				}
 			}
 			errCh <- nil
@@ -332,7 +332,7 @@ func (s *Syncer) localScanAndUpload(ctx context.Context) error {
 					Sha1: h, LastSrc: "local", LastSync: time.Now().Unix(),
 				})
 				s.recently[e.PathRel] = time.Now().Add(60 * time.Second).Unix()
-				s.trackUploaded(e.PathRel)
+				s.trackUploaded(e.PathRel, e.Size)
 			}
 			errCh <- nil
 		}()
@@ -395,11 +395,12 @@ func (s *Syncer) localDetectAndDeleteCloud(ctx context.Context) error {
 
 	for _, rel := range toDelete {
 		graphPath := "/" + rel
-		log.Printf("local DEL → cloud DEL %s", rel)
+
 		if err := s.g.DeleteByPath(ctx, graphPath); err != nil {
 			log.Printf("cloud delete FAIL %s: %v", rel, err)
 			continue
 		}
+		s.trackDeleted(rel)
 		if err := store.DeleteByPath(ctx, s.db, rel); err != nil {
 			log.Printf("db delete FAIL %s: %v", rel, err)
 		}
@@ -415,6 +416,19 @@ func conflictName(pathRel, tag string) string {
 	return strings.TrimPrefix(filepath.Join(filepath.Dir(pathRel), name), "/")
 }
 
+func (s *Syncer) logChange(action, rel string, size int64) {
+	switch action {
+	case "upload":
+		log.Printf("[UPLOAD] %s (%d bytes)", rel, size)
+	case "download":
+		log.Printf("[DOWNLOAD] %s (%d bytes)", rel, size)
+	case "delete":
+		log.Printf("[DELETE] %s", rel)
+	default:
+		log.Printf("[%s] %s", strings.ToUpper(action), rel)
+	}
+}
+
 // 只在需要时打印检查日志；不计入最终清单
 func (s *Syncer) trackChecked(rel string) {
 	if s.cfg.Log != nil && s.cfg.Log.ListChecked {
@@ -423,19 +437,23 @@ func (s *Syncer) trackChecked(rel string) {
 }
 
 // 成功上传后记录
-func (s *Syncer) trackUploaded(rel string) {
+func (s *Syncer) trackUploaded(rel string, size int64) {
 	s.mu.Lock()
 	s.uploaded = append(s.uploaded, rel)
 	s.mu.Unlock()
-	log.Printf("[upload] %s", rel)
+	s.logChange("upload", rel, size)
 }
 
 // 成功下载后记录
-func (s *Syncer) trackDownloaded(rel string) {
+func (s *Syncer) trackDownloaded(rel string, size int64) {
 	s.mu.Lock()
 	s.downloaded = append(s.downloaded, rel)
 	s.mu.Unlock()
-	log.Printf("[download] %s", rel)
+	s.logChange("download", rel, size)
+}
+
+func (s *Syncer) trackDeleted(rel string) {
+	s.logChange("delete", rel, 0)
 }
 
 // 在 SyncOnce 末尾调用：仅汇总“真正修改过”的文件
