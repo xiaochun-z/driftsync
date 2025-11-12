@@ -15,6 +15,7 @@ import (
 	"github.com/xiaochun-z/driftsync/internal/scan"
 	"github.com/xiaochun-z/driftsync/internal/selective"
 	"github.com/xiaochun-z/driftsync/internal/store"
+	"github.com/xiaochun-z/driftsync/internal/ui"
 )
 
 type Syncer struct {
@@ -49,15 +50,19 @@ func NewSyncer(cfg *config.Config, db *sql.DB, g *graph.Client) *Syncer {
 }
 
 func (s *Syncer) SyncOnce(ctx context.Context) error {
+	loader := ui.Start("Syncing", 120*time.Millisecond)
+	defer loader.Stop("")
 	if err := s.localDetectAndDeleteCloud(ctx); err != nil {
 		log.Printf("local->cloud delete err: %v", err)
 	}
 	if s.cfg.UploadFromLocal {
+		loader.TickHint("Uploading local changes…")
 		if err := s.localScanAndUpload(ctx); err != nil {
 			log.Printf("local upload err: %v", err)
 		}
 	}
 	if s.cfg.DownloadFromCloud {
+		loader.TickHint("Reconciling cloud delta…")
 		if err := s.cloudDelta(ctx); err != nil {
 			log.Printf("cloud delta err: %v", err)
 		}
