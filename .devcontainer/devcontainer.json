@@ -1,0 +1,26 @@
+{
+  "name": "driftsync (Go 1.22)",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  "remoteUser": "vscode",
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "go.useLanguageServer": true,
+        "go.toolsManagement.autoUpdate": true
+      },
+      "extensions": [
+        "golang.Go",
+        "ms-azuretools.vscode-docker"
+      ]
+    }
+  },
+  "containerEnv": {
+    "CGO_ENABLED": "0"
+  },
+  "postCreateCommand": "go mod download",
+  "mounts": [
+    "source=${localWorkspaceFolder}/config.sample.yaml,target=${containerWorkspaceFolder}/config.yaml,type=bind,consistency=cached"
+  ]
+}
