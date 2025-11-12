@@ -7,26 +7,27 @@ import (
 	"time"
 )
 
+// Loader is a simple terminal spinner for long-running tasks.
+// It uses only standard library and works safely even if redirected (no-op when not a TTY).
 type Loader struct {
-	msg      string
 	interval time.Duration
 	done     chan struct{}
 	wg       sync.WaitGroup
 	enabled  bool
 }
 
+// isTerminal returns true if stdout is a character device (TTY).
 func isTerminal() bool {
 	fi, err := os.Stdout.Stat()
 	if err != nil {
 		return false
 	}
-	// Char device 基本可视作 TTY；Windows/WSL 下同样适用。
 	return (fi.Mode() & os.ModeCharDevice) != 0
 }
 
-func Start(message string, interval time.Duration) *Loader {
+// Start launches the spinner. When not running in a terminal, it becomes a no-op.
+func Start(interval time.Duration) *Loader {
 	l := &Loader{
-		msg:      message,
 		interval: interval,
 		done:     make(chan struct{}),
 		enabled:  isTerminal(),
@@ -44,12 +45,12 @@ func Start(message string, interval time.Duration) *Loader {
 		for {
 			select {
 			case <-l.done:
-				// 清一行
+				// Clear the line on stop
 				fmt.Fprint(os.Stdout, "\r\033[2K")
 				return
 			case <-t.C:
-				// \r 回到行首；\033[2K 清除整行（在大多数终端可用）
-				fmt.Fprintf(os.Stdout, "\r\033[2K⏳ %s %c", l.msg, frames[i%len(frames)])
+				// \r moves to line start; \033[2K clears the entire line
+				fmt.Fprintf(os.Stdout, "\r\033[2K%c", frames[i%len(frames)])
 				i++
 			}
 		}
@@ -57,29 +58,21 @@ func Start(message string, interval time.Duration) *Loader {
 	return l
 }
 
-func (l *Loader) TickHint(hint string) {
-	if !l.enabled {
-		return
-	}
-	fmt.Fprintf(os.Stdout, "\r\033[2K⏳ %s — %s", l.msg, hint)
-}
-
+// Stop terminates the spinner and clears the line.
 func (l *Loader) Stop(finalLine string) {
 	if !l.enabled {
 		return
 	}
 	select {
 	case <-l.done:
-		// 已关闭
 	default:
 		close(l.done)
 	}
 	l.wg.Wait()
-	// 输出一行最终结果（可留空）
+	fmt.Fprint(os.Stdout, "\r\033[2K") // final clear
 	if finalLine != "" {
-		fmt.Fprintf(os.Stdout, "\r\033[2K%s\n", finalLine)
+		fmt.Fprintf(os.Stdout, "%s\n", finalLine)
 	} else {
-		// 保证换行，避免与后续日志黏连
 		fmt.Fprintln(os.Stdout)
 	}
 }
