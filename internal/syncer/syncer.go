@@ -178,20 +178,32 @@ func (s *Syncer) cloudDelta(ctx context.Context) error {
 					targetPath = filepath.Join(filepath.Dir(lp), conflictName)
 					log.Printf("CONFLICT: keeping both versions for %s; cloud saved as %s", rel, conflictName)
 				}
+
+				existed := (localHash != "") // 下载前是否已有同名本地文件
+
 				if err := s.g.DownloadTo(ctx, t.ID, targetPath); err != nil {
 					log.Printf("cloud→local FAIL %s: %v", rel, err)
 					continue
 				}
+
 				h, herr := scan.HashFile(targetPath)
 				if herr != nil {
 					h = ""
 				}
+
+				// 只有真正改变了本地状态时，才记为“downloaded”
+				// 条件：1) 冲突导致另存（targetPath!=lp），或 2) 原先不存在，或 3) 内容确实变化（h != localHash）
+				changed := (targetPath != lp) || (!existed) || (existed && h != localHash)
+
 				_ = store.UpsertItem(ctx, s.db, store.Item{
 					ID: t.ID, PathRel: rel, ETag: t.ETag, Size: t.Size, Mtime: 0,
 					Sha1: h, LastSrc: "cloud", LastSync: time.Now().Unix(),
 				})
 				s.recently[rel] = time.Now().Add(90 * time.Second).Unix()
-				s.trackDownloaded(rel)
+
+				if changed {
+					s.trackDownloaded(rel) // 只在有变更时打 [downloaded]
+				}
 			}
 			errCh <- nil
 		}()
