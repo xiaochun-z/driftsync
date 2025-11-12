@@ -19,6 +19,13 @@ type Config struct {
 	UploadWorkers     int    `yaml:"upload_workers"`
 	UploadChunkMB     int    `yaml:"upload_chunk_mb"`
 	UploadParallel    int    `yaml:"upload_parallel"`
+
+	Sync *SelectiveYAML `yaml:"sync,omitempty"`
+}
+
+type SelectiveYAML struct {
+	Include []string `yaml:"include,omitempty"`
+	Exclude []string `yaml:"exclude,omitempty"`
 }
 
 func Load(path string) (*Config, error) {

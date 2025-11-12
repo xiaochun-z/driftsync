@@ -27,7 +27,14 @@ type Syncer struct {
 }
 
 func NewSyncer(cfg *config.Config, db *sql.DB, g *graph.Client) *Syncer {
-	f, _ := selective.Load(cfg.SyncListPath)
+	var f *selective.List
+
+	if cfg.Sync != nil && (len(cfg.Sync.Include) > 0 || len(cfg.Sync.Exclude) > 0) {
+		f = selective.FromYAML(cfg.Sync.Include, cfg.Sync.Exclude)
+	} else {
+		f, _ = selective.Load(cfg.SyncListPath)
+	}
+
 	return &Syncer{
 		cfg: cfg, db: db, g: g, filter: f,
 		lastLocal: map[string]scan.Entry{},
