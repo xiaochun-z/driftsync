@@ -311,8 +311,32 @@ func (s *Syncer) localScanAndUpload(ctx context.Context) error {
 
 				h, _ := scan.HashFile(lp)
 				if old, err := store.GetByPathFull(ctx, s.db, e.PathRel); err == nil {
-					if h != "" && h == old.Sha1 {
-						continue
+					if old.LastSrc == "cloud" {
+						if h == "" {
+							continue
+						}
+
+						if old.Sha1 == "" {
+							_ = store.UpsertItem(ctx, s.db, store.Item{
+								ID:       old.ID,
+								PathRel:  old.PathRel,
+								ETag:     old.ETag,
+								Size:     old.Size,
+								Mtime:    old.Mtime,
+								Sha1:     h,
+								LastSrc:  old.LastSrc,
+								LastSync: time.Now().Unix(),
+							})
+							continue
+						}
+
+						if h == old.Sha1 {
+							continue
+						}
+					} else {
+						if h != "" && h == old.Sha1 {
+							continue
+						}
 					}
 					if old.ETag != "" {
 						if it, err := s.g.GetItemByPath(ctx, rel); err == nil && it.ETag != "" && it.ETag != old.ETag && old.Sha1 != "" && h != old.Sha1 {
