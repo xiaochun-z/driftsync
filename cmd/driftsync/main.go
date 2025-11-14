@@ -21,7 +21,7 @@ import (
 //	go build -ldflags="-X main.version=..."
 //
 // If not overridden, this static value is used.
-var version = "v0.7.10"
+var version = "v0.7.11"
 
 // printUsage prints a help message that includes the version, usage, and flags.
 // It is wired into flag.Usage and used for -h/--help as well as parse errors.
