@@ -187,7 +187,7 @@ func (s *Syncer) cloudDelta(ctx context.Context) error {
 				}
 				dbOld, _ := store.GetByPathFull(ctx, s.db, rel)
 				conflict := false
-				if dbOld != nil && localHash != "" && dbOld.Sha1 != "" && localHash != dbOld.Sha1 && dbOld.ETag != "" && dbOld.ETag != t.ETag {
+				if dbOld != nil && localHash != "" && dbOld.Shasum != "" && localHash != dbOld.Shasum && dbOld.ETag != "" && dbOld.ETag != t.ETag {
 					conflict = true
 				}
 				targetPath := lp
@@ -217,7 +217,7 @@ func (s *Syncer) cloudDelta(ctx context.Context) error {
 
 				_ = store.UpsertItem(ctx, s.db, store.Item{
 					ID: t.ID, PathRel: rel, ETag: t.ETag, Size: t.Size, Mtime: 0,
-					Sha1: h, LastSrc: "cloud", LastSync: time.Now().Unix(),
+					Shasum: h, LastSrc: "cloud", LastSync: time.Now().Unix(),
 				})
 				s.recently[rel] = time.Now().Add(90 * time.Second).Unix()
 
@@ -316,30 +316,30 @@ func (s *Syncer) localScanAndUpload(ctx context.Context) error {
 							continue
 						}
 
-						if old.Sha1 == "" {
+						if old.Shasum == "" {
 							_ = store.UpsertItem(ctx, s.db, store.Item{
 								ID:       old.ID,
 								PathRel:  old.PathRel,
 								ETag:     old.ETag,
 								Size:     old.Size,
 								Mtime:    old.Mtime,
-								Sha1:     h,
+								Shasum:   h,
 								LastSrc:  old.LastSrc,
 								LastSync: time.Now().Unix(),
 							})
 							continue
 						}
 
-						if h == old.Sha1 {
+						if h == old.Shasum {
 							continue
 						}
 					} else {
-						if h != "" && h == old.Sha1 {
+						if h != "" && h == old.Shasum {
 							continue
 						}
 					}
 					if old.ETag != "" {
-						if it, err := s.g.GetItemByPath(ctx, rel); err == nil && it.ETag != "" && it.ETag != old.ETag && old.Sha1 != "" && h != old.Sha1 {
+						if it, err := s.g.GetItemByPath(ctx, rel); err == nil && it.ETag != "" && it.ETag != old.ETag && old.Shasum != "" && h != old.Shasum {
 							conflictRel := "/" + conflictName(e.PathRel, "local-conflict")
 							log.Printf("CONFLICT: both changed; uploading local as %s", conflictRel)
 							if e.Size <= 4*1024*1024 {
@@ -372,7 +372,7 @@ func (s *Syncer) localScanAndUpload(ctx context.Context) error {
 				}
 				_ = store.UpsertItem(ctx, s.db, store.Item{
 					ID: it.ID, PathRel: e.PathRel, ETag: it.ETag, Size: it.Size, Mtime: e.Mtime,
-					Sha1: h, LastSrc: "local", LastSync: time.Now().Unix(),
+					Shasum: h, LastSrc: "local", LastSync: time.Now().Unix(),
 				})
 				s.recently[e.PathRel] = time.Now().Add(60 * time.Second).Unix()
 				s.trackUploaded(e.PathRel, e.Size)
