@@ -3,20 +3,16 @@ package ui
 import (
 	"fmt"
 	"os"
-	"sync"
 	"time"
+
+	"github.com/theckman/yacspin"
 )
 
-// Loader is a simple terminal spinner for long-running tasks.
-// It uses only standard library and works safely even if redirected (no-op when not a TTY).
 type Loader struct {
-	interval time.Duration
-	done     chan struct{}
-	wg       sync.WaitGroup
-	enabled  bool
+	sp      *yacspin.Spinner
+	enabled bool
 }
 
-// isTerminal returns true if stdout is a character device (TTY).
 func isTerminal() bool {
 	fi, err := os.Stdout.Stat()
 	if err != nil {
@@ -25,54 +21,55 @@ func isTerminal() bool {
 	return (fi.Mode() & os.ModeCharDevice) != 0
 }
 
-// Start launches the spinner. When not running in a terminal, it becomes a no-op.
 func Start(interval time.Duration) *Loader {
-	l := &Loader{
-		interval: interval,
-		done:     make(chan struct{}),
-		enabled:  isTerminal(),
-	}
-	if !l.enabled {
+	l := &Loader{}
+
+	// 非 TTY 时直接 no-op，保持现在的行为
+	if !isTerminal() {
 		return l
 	}
-	frames := []rune{'⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'}
-	l.wg.Add(1)
-	go func() {
-		defer l.wg.Done()
-		t := time.NewTicker(l.interval)
-		defer t.Stop()
-		i := 0
-		for {
-			select {
-			case <-l.done:
-				// Clear the line on stop
-				fmt.Fprint(os.Stdout, "\r\033[2K")
-				return
-			case <-t.C:
-				// \r moves to line start; \033[2K clears the entire line
-				fmt.Fprintf(os.Stdout, "\r\033[2K%c", frames[i%len(frames)])
-				i++
-			}
-		}
-	}()
+
+	cfg := yacspin.Config{
+		Frequency:       interval,
+		Writer:          os.Stdout,
+		CharSet:         yacspin.CharSets[11], // 任选一个你喜欢的样式
+		Suffix:          " syncing...",
+		SuffixAutoColon: true,
+		ColorAll:        true,
+		SpinnerAtEnd:    true, // 停止时把 spinner 留在行首，然后输出 StopMessage
+	}
+
+	sp, err := yacspin.New(cfg)
+	if err != nil {
+		// 初始化失败就退回静默模式，不影响主逻辑
+		return l
+	}
+
+	if err := sp.Start(); err != nil {
+		return l
+	}
+
+	l.sp = sp
+	l.enabled = true
 	return l
 }
 
-// Stop terminates the spinner and clears the line.
+// Stop: 停止 spinner，并可选输出一行最终信息
 func (l *Loader) Stop(finalLine string) {
-	if !l.enabled {
+	if !l.enabled || l.sp == nil {
 		return
 	}
-	select {
-	case <-l.done:
-	default:
-		close(l.done)
-	}
-	l.wg.Wait()
-	fmt.Fprint(os.Stdout, "\r\033[2K") // final clear
+
 	if finalLine != "" {
-		fmt.Fprintf(os.Stdout, "%s\n", finalLine)
-	} else {
+		// 让最后一帧行显示你传入的文字
+		l.sp.StopMessage(finalLine)
+	}
+
+	// Stop 会处理好清理/刷新行
+	_ = l.sp.Stop()
+
+	if finalLine == "" {
+		// 想保留空行（和旧版本行为类似），手动补一行
 		fmt.Fprintln(os.Stdout)
 	}
 }

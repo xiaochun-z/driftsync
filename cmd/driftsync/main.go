@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -14,11 +15,51 @@ import (
 	"github.com/xiaochun-z/driftsync/internal/syncer"
 )
 
-var version = "v0.7.9"
+// version is the application version.
+// It can optionally be overridden at build time via:
+//
+//	go build -ldflags="-X main.version=..."
+//
+// If not overridden, this static value is used.
+var version = "v0.7.10"
+
+// printUsage prints a help message that includes the version, usage, and flags.
+// It is wired into flag.Usage and used for -h/--help as well as parse errors.
+func printUsage() {
+	exe := filepath.Base(os.Args[0])
+	out := flag.CommandLine.Output()
+
+	// Header: name + version
+	fmt.Fprintf(out, "%s %s\n\n", exe, version)
+
+	// Basic usage line
+	fmt.Fprintf(out, "Usage:\n  %s [flags]\n\n", exe)
+
+	// Optional short description
+	fmt.Fprintln(out, "driftsync synchronizes a local folder with a cloud drive using delta API and a local SQLite database.")
+
+	// List all flags
+	fmt.Fprintln(out, "Flags:")
+	flag.PrintDefaults()
+}
 
 func main() {
+	// Install custom Usage printer before defining/using flags.
+	flag.Usage = printUsage
+
+	// Flags
 	cfgPathFlag := flag.String("config", "", "Path to configuration YAML (optional)")
+	versionFlag := flag.Bool("version", false, "Print version and exit")
+
 	flag.Parse()
+
+	// Handle --version / -version early, before touching config or networking.
+	if *versionFlag {
+		out := flag.CommandLine.Output()
+		exe := filepath.Base(os.Args[0])
+		fmt.Fprintf(out, "%s %s\n", exe, version)
+		return
+	}
 
 	cfgPath := *cfgPathFlag
 	if cfgPath == "" {
@@ -38,9 +79,6 @@ func main() {
 	if err := cfg.Validate(); err != nil {
 		log.Fatalf("Config invalid: %v", err)
 	}
-
-	log.Printf("DriftSync %s (one-shot) starting. config=%s local_path=%s tenant=%s",
-		version, cfgPath, cfg.LocalPath, cfg.Tenant)
 
 	// Database in same directory as config.yaml
 	dbPath := filepath.Join(filepath.Dir(cfgPath), "driftsync.db")

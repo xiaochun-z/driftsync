@@ -1,120 +1,170 @@
-# DriftSync
+# driftsync
 
-**DriftSync** is a one-shot, bidirectional synchronization tool between a local folder and Microsoft OneDrive.  
-Written in Go, it focuses on speed, correctness, and safety — each run performs a full synchronization cycle and then exits cleanly.
-
-# Disclaimer
-
-DriftSync performs automatic file synchronization between your local system and Microsoft OneDrive.
-While every effort has been made to ensure safe and predictable operation, data loss is always a risk when performing bidirectional sync operations.
-
-If any file is accidentally deleted or modified, you may be able to restore it from the OneDrive web interface at https://onedrive.live.com under Recycle Bin.
-However, recovery cannot be guaranteed — OneDrive retention policies and account settings may limit the availability of deleted items.
-
-You are strongly advised to maintain your own independent backups of all important data before using DriftSync.
-By using this software, you acknowledge and agree that DriftSync, its contributors, and maintainers assume no responsibility or liability for any data loss, corruption, or other damages arising from its use.
-If you do not agree with these terms, do not use this program.
-
-![request access](screenshots/request-access.png)
-![DriftSync](screenshots/DriftSync.png)
----
-
-## Key Features
-
-- **Bidirectional Sync** — Keeps local and cloud fully aligned.  
-  Additions, modifications, and deletions propagate in both directions.  
-  DriftSync always follows the newest state: if a file was deleted on the cloud, it will be removed locally, and vice versa.
-
-- **Selective Sync (`sync_list`)** — Synchronize only specific paths or patterns.
-
-- **Conflict-Safe** — If both sides changed the same file, DriftSync preserves both:  
-  1. `file.local-conflict-YYYYmmdd-HHMMSS.ext`  
-  2. `file.cloud-conflict-YYYYmmdd-HHMMSS.ext`
-
-- **Large File Support** — Files > 4 MB are uploaded using `createUploadSession` with chunked transfer and automatic retry (without resume after exit).
-
-- **Fast and Reliable** — Parallel upload/download workers, SHA-1 based skipping of unchanged files, and efficient connection reuse.
-
-- **One-Shot Mode** — Runs one full sync cycle (delete → upload → download) and then exits.
-
-- **SQLite State DB** — Persists tokens, ETags, hashes, and timestamps for accurate incremental detection.
+`driftsync` is a command-line tool for fast, reliable, incremental synchronization between a **local directory** and **Microsoft OneDrive** using the **Delta API**.  
+It is optimized for large folder structures, low-change environments, and long‑running use inside Dev Containers, Linux servers, WSL, or Windows hosts.
 
 ---
 
-## Configuration
+## ✨ Core Features
 
-Create `config.yaml` (or copy from `config.sample.yaml`):
+### 🔄 Incremental Sync via Delta API
+- Tracks file changes using OneDrive Delta API  
+- Minimizes bandwidth usage  
+- Avoids re-uploading unchanged files
+
+### 🗄 Local SQLite Metadata Store
+- Keeps a persistent local database (`driftsync.db`)  
+- Stores hash, timestamps, and delta tokens  
+- Ensures safe resume and consistent sync
+
+### 🔐 Secure Authentication (Device Code Flow)
+- Native Microsoft identity login  
+- Tokens securely stored locally  
+
+### 🚀 Lightweight & Cross‑Platform
+- Written in Go  
+- Runs on Linux, macOS, Windows, WSL, Dev Containers  
+- No external runtime dependencies
+
+### 📁 Selective Sync Support
+- Ability to **include** or **exclude** specific paths  
+- Useful for ignoring large or irrelevant directories  
+- Perfect for code repos, workspaces, or partial sync needs
+
+---
+
+## 📦 Installation
+
+Download the latest release for your platform from GitHub (or build from source):
+
+```bash
+GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -trimpath -o driftsync.exe ./cmd/driftsync
+```
+
+Linux build:
+
+```bash
+go build -o driftsync ./cmd/driftsync
+```
+
+---
+
+## ⚙️ Configuration
+
+Create a configuration file (default: `config.yaml`):
 
 ```yaml
-tenant: consumers                 # or 'common' / your AAD tenant ID
-client_id: "3ae224c9-f16c-42d1-bf5d-44151f2b99fa"
-local_path: "/absolute/path/to/sync"
-download_from_cloud: true
-upload_from_local: true
-sync_list_path: "/absolute/path/to/sync_list"   # empty = sync everything
-download_workers: 8
-upload_workers: 8
-upload_chunk_mb: 8
-upload_parallel: 2
-```
-## sync_list Syntax
+tenant: "<your-azure-tenant-id>"
+clientId: "<your-azure-app-client-id>"
+root: "/work/data"
 
-The sync_list file lets you precisely control which files or folders are synchronized.
-Its syntax is line-based and pattern-driven, as implemented in internal/selective.
+include:
+  - "documents"
+  - "projects"
 
-Each non-empty line is interpreted as follows:
-| Form                     | Meaning                                                    |
-| ------------------------ | ---------------------------------------------------------- |
-| `path/or/prefix`         | include all files under this relative path (prefix match). |
-| `-pattern`               | exclude files or directories matching this pattern.        |
-| blank line / `# comment` | ignored.                                                   |
-
-### Behavior Rules
-
-* Inclusion lines start without - and act as path prefixes.
-Example:
-```
-docs
-images/
-```
-includes all files whose relative paths start with docs or images/.
-
-* Exclusion lines start with - and may contain * or ? wildcards.
-Example:
-```
--*.tmp
--backup/*
-```
-excludes any file ending with .tmp or any file under backup/.
-
-* Paths are relative to local_path, always using forward slashes /.
-(Example : subdir/file.txt, not C:\\path\\...)
-
-* Matching is case-sensitive on Linux and case-insensitive on Windows, following Go’s default filepath.Match behavior.
-
-If sync_list_path is empty or missing, all files are included (no filters).
-```
-# include everything under /docs
-/docs
-
-# include images but exclude temporary files
-/images
--*.tmp
+exclude:
+  - ".git"
+  - "node_modules"
 ```
 
-This will synchronize:
+### Explanation
 
-1. docs/readme.md ✅
+| Key         | Description |
+|-------------|-------------|
+| `tenant`    | Azure AD tenant ID (GUID) |
+| `clientId`  | Application ID registered for OneDrive API |
+| `root`      | Local folder to sync |
+| `include`   | Optional: only sync these relative paths |
+| `exclude`   | Optional: skip these paths |
 
-2. images/photo.jpg ✅
+---
 
-3. notes/todo.md ❌ (not under included prefix)
+## 🎯 Selective Sync
 
-4. images/tmp123.tmp ❌ (matches -*.tmp)
+Selective sync lets you control which parts of the local folder participate in synchronization.
 
-## Usage
+### Example: Include only specific folders
+
+```yaml
+include:
+  - "src"
+  - "docs"
 ```
-go mod tidy
-go build ./cmd/driftsync
-./driftsync
+
+Meaning: *Only these two directories will sync. Everything else will be skipped.*
+
+---
+
+### Example: Exclude large or unwanted directories
+
+```yaml
+exclude:
+  - "node_modules"
+  - "bin"
+  - "obj"
+  - ".cache"
 ```
+
+Meaning: *These paths are ignored even if included elsewhere.*
+
+---
+
+### How Matching Works
+
+- All paths are matched relative to `root`
+- Matching is prefix‑based  
+  Example:  
+  `exclude: ["node_modules"]` will ignore all:
+
+```
+node_modules/
+project/node_modules/
+any/path/node_modules/
+```
+
+- Include rules override exclude rules (include has priority)
+
+---
+
+## ▶️ Running the Sync
+
+```bash
+./driftsync --config ./config.yaml
+```
+
+You will be prompted for device‑code login on the first run.
+
+---
+
+## 🔧 Optional Flags
+
+| Flag | Description |
+|------|-------------|
+| `--config` | Path to `config.yaml` |
+| `--version` | Print version |
+| `--help` | Show usage and options |
+
+---
+
+## 🗃 Database
+
+The SQLite database is stored next to your config file:
+
+```
+config.yaml
+driftsync.db
+```
+
+This allows reliable incremental sync between runs.
+
+---
+
+## 📝 License
+
+Apache 2.0 / MIT (choose your preferred license)
+
+---
+
+## 🤝 Contributions
+
+Pull requests and feature suggestions are welcome!
