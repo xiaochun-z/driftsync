@@ -38,7 +38,8 @@ func NewSyncer(cfg *config.Config, db *sql.DB, g *graph.Client) *Syncer {
 		f = selective.FromYAML(cfg.Sync.Include, cfg.Sync.Exclude)
 	} else {
 		if strings.TrimSpace(cfg.SyncListPath) != "" {
-			if lf, err := selective.Load(cfg.SyncListPath); err == nil {
+			if lf, err := selective.Load(cfg.SyncListPath);
+			err == nil {
 				f = lf
 			} else {
 				log.Printf("WARN: load sync_list_path failed: %v", err)
@@ -69,16 +70,19 @@ func NewSyncer(cfg *config.Config, db *sql.DB, g *graph.Client) *Syncer {
 func (s *Syncer) SyncOnce(ctx context.Context) error {
 	loader := ui.Start(120 * time.Millisecond)
 	defer loader.Stop("")
-	if err := s.localDetectAndDeleteCloud(ctx); err != nil {
+	if err := s.localDetectAndDeleteCloud(ctx);
+	err != nil {
 		log.Printf("local->cloud delete err: %v", err)
 	}
 	if s.cfg.UploadFromLocal {
-		if err := s.localScanAndUpload(ctx); err != nil {
+		if err := s.localScanAndUpload(ctx);
+		err != nil {
 			log.Printf("local upload err: %v", err)
 		}
 	}
 	if s.cfg.DownloadFromCloud {
-		if err := s.cloudDelta(ctx); err != nil {
+		if err := s.cloudDelta(ctx);
+		err != nil {
 			log.Printf("cloud delta err: %v", err)
 		}
 	}
@@ -108,7 +112,8 @@ func (s *Syncer) cloudDelta(ctx context.Context) error {
 			if it.Deleted != nil {
 				lp := filepath.Join(s.cfg.LocalPath, filepath.FromSlash(pathRel))
 				_ = os.Remove(lp)
-				if err := store.DeleteByPath(ctx, s.db, pathRel); err != nil {
+				if err := store.DeleteByPath(ctx, s.db, pathRel);
+				err != nil {
 					log.Printf("db delete FAIL %s: %v", pathRel, err)
 				}
 				continue
@@ -124,6 +129,10 @@ func (s *Syncer) cloudDelta(ctx context.Context) error {
 			}
 			if it.File != nil {
 				if s.filter != nil && !s.filter.ShouldSync(pathRel, false) {
+					continue
+				}
+				// Ignore internal conflict files from cloud (prevent loop)
+				if isInternalConflictFile(pathRel) {
 					continue
 				}
 				toDownload = append(toDownload, dlTask{ID: it.ID, PathRel: pathRel, Size: it.Size, ETag: it.ETag})
@@ -145,7 +154,8 @@ func (s *Syncer) cloudDelta(ctx context.Context) error {
 			if s.filter != nil && !s.filter.ShouldSync(p, false) {
 				continue
 			}
-			if _, ok := cloudAlive[p]; !ok {
+			if _, ok := cloudAlive[p];
+			!ok {
 				lp := filepath.Join(s.cfg.LocalPath, filepath.FromSlash(p))
 				if _, statErr := os.Stat(lp); statErr == nil {
 					_ = os.Remove(lp)
@@ -170,18 +180,21 @@ func (s *Syncer) cloudDelta(ctx context.Context) error {
 	done := make(chan struct{})
 	errCh := make(chan error, workers)
 
-	for i := 0; i < workers; i++ {
+	for i := 0;
+	i < workers; i++ {
 		go func() {
 			for t := range jobs {
 				rel := t.PathRel
 				lp := filepath.Join(s.cfg.LocalPath, filepath.FromSlash(rel))
-				if err := os.MkdirAll(filepath.Dir(lp), 0o755); err != nil {
+				if err := os.MkdirAll(filepath.Dir(lp), 0o755);
+				err != nil {
 					log.Printf("mkdir: %v", err)
 					continue
 				}
 				localHash := ""
 				if _, err := os.Stat(lp); err == nil {
-					if h, err := scan.HashFile(lp); err == nil {
+					if h, err := scan.HashFile(lp);
+					err == nil {
 						localHash = h
 					}
 				}
@@ -201,7 +214,8 @@ func (s *Syncer) cloudDelta(ctx context.Context) error {
 
 				existed := (localHash != "") // 下载前是否已有同名本地文件
 
-				if err := s.g.DownloadTo(ctx, t.ID, targetPath); err != nil {
+				if err := s.g.DownloadTo(ctx, t.ID, targetPath);
+				err != nil {
 					log.Printf("cloud→local FAIL %s: %v", rel, err)
 					continue
 				}
@@ -213,7 +227,8 @@ func (s *Syncer) cloudDelta(ctx context.Context) error {
 
 				// 只有真正改变了本地状态时，才记为“downloaded”
 				// 条件：1) 冲突导致另存（targetPath!=lp），或 2) 原先不存在，或 3) 内容确实变化（h != localHash）
-				changed := (targetPath != lp) || (!existed) || (existed && h != localHash)
+				changed := (targetPath != lp) ||
+					(!existed) || (existed && h != localHash)
 
 				_ = store.UpsertItem(ctx, s.db, store.Item{
 					ID: t.ID, PathRel: rel, ETag: t.ETag, Size: t.Size, Mtime: 0,
@@ -234,7 +249,8 @@ func (s *Syncer) cloudDelta(ctx context.Context) error {
 			jobs <- t
 		}
 		close(jobs)
-		for i := 0; i < workers; i++ {
+		for i := 0;
+		i < workers; i++ {
 			<-errCh
 		}
 		close(done)
@@ -276,7 +292,13 @@ func (s *Syncer) localScanAndUpload(ctx context.Context) error {
 		if s.filter != nil && !s.filter.ShouldSync(e.PathRel, false) {
 			continue
 		}
-		if until, ok := s.recently[e.PathRel]; ok && until > time.Now().Unix() {
+		// Ignore internal conflict files
+		if isInternalConflictFile(e.PathRel) {
+			continue
+		}
+
+		if until, ok := s.recently[e.PathRel];
+		ok && until > time.Now().Unix() {
 			continue
 		}
 		s.trackChecked(e.PathRel)
@@ -302,7 +324,8 @@ func (s *Syncer) localScanAndUpload(ctx context.Context) error {
 	done := make(chan struct{})
 	errCh := make(chan error, workers)
 
-	for i := 0; i < workers; i++ {
+	for i := 0;
+	i < workers; i++ {
 		go func() {
 			for t := range jobs {
 				e := t.E
@@ -310,7 +333,8 @@ func (s *Syncer) localScanAndUpload(ctx context.Context) error {
 				lp := filepath.Join(s.cfg.LocalPath, filepath.FromSlash(e.PathRel))
 
 				h, _ := scan.HashFile(lp)
-				if old, err := store.GetByPathFull(ctx, s.db, e.PathRel); err == nil {
+				if old, err := store.GetByPathFull(ctx, s.db, e.PathRel);
+				err == nil {
 					if old.LastSrc == "cloud" {
 						if h == "" {
 							continue
@@ -339,16 +363,19 @@ func (s *Syncer) localScanAndUpload(ctx context.Context) error {
 						}
 					}
 					if old.ETag != "" {
-						if it, err := s.g.GetItemByPath(ctx, rel); err == nil && it.ETag != "" && it.ETag != old.ETag && old.Shasum != "" && h != old.Shasum {
+						if it, err := s.g.GetItemByPath(ctx, rel);
+						err == nil && it.ETag != "" && it.ETag != old.ETag && old.Shasum != "" && h != old.Shasum {
 							conflictRel := "/" + conflictName(e.PathRel, "local-conflict")
 							log.Printf("CONFLICT: both changed; uploading local as %s", conflictRel)
 							if e.Size <= 4*1024*1024 {
-								if _, err := s.g.UploadSmall(ctx, conflictRel, lp); err != nil {
+								if _, err := s.g.UploadSmall(ctx, conflictRel, lp);
+								err != nil {
 									log.Printf("local→cloud FAIL %s: %v", e.PathRel, err)
 									continue
 								}
 							} else {
-								if _, err := s.g.UploadLarge(ctx, conflictRel, lp, s.cfg.UploadChunkMB, s.cfg.UploadParallel); err != nil {
+								if _, err := s.g.UploadLarge(ctx, conflictRel, lp, s.cfg.UploadChunkMB, s.cfg.UploadParallel);
+								err != nil {
 									log.Printf("local→cloud FAIL %s: %v", e.PathRel, err)
 									continue
 								}
@@ -386,7 +413,8 @@ func (s *Syncer) localScanAndUpload(ctx context.Context) error {
 			jobs <- t
 		}
 		close(jobs)
-		for i := 0; i < workers; i++ {
+		for i := 0;
+		i < workers; i++ {
 			<-errCh
 		}
 		close(done)
@@ -410,6 +438,10 @@ func (s *Syncer) localDetectAndDeleteCloud(ctx context.Context) error {
 		if s.filter != nil && !s.filter.ShouldSync(e.PathRel, false) {
 			continue
 		}
+		// Ignore internal conflict files
+		if isInternalConflictFile(e.PathRel) {
+			continue
+		}
 		cur[e.PathRel] = struct{}{}
 	}
 
@@ -422,13 +454,15 @@ func (s *Syncer) localDetectAndDeleteCloud(ctx context.Context) error {
 	var toDelete []string
 	for rows.Next() {
 		var pathRel string
-		if err := rows.Scan(&pathRel); err != nil {
+		if err := rows.Scan(&pathRel);
+		err != nil {
 			return err
 		}
 		if s.filter != nil && !s.filter.ShouldSync(pathRel, false) {
 			continue
 		}
-		if _, ok := cur[pathRel]; !ok {
+		if _, ok := cur[pathRel];
+		!ok {
 			toDelete = append(toDelete, pathRel)
 		}
 	}
@@ -439,12 +473,14 @@ func (s *Syncer) localDetectAndDeleteCloud(ctx context.Context) error {
 	for _, rel := range toDelete {
 		graphPath := "/" + rel
 
-		if err := s.g.DeleteByPath(ctx, graphPath); err != nil {
+		if err := s.g.DeleteByPath(ctx, graphPath);
+		err != nil {
 			log.Printf("cloud delete FAIL %s: %v", rel, err)
 			continue
 		}
 		s.trackDeleted(rel)
-		if err := store.DeleteByPath(ctx, s.db, rel); err != nil {
+		if err := store.DeleteByPath(ctx, s.db, rel);
+		err != nil {
 			log.Printf("db delete FAIL %s: %v", rel, err)
 		}
 		delete(s.recently, rel)
@@ -457,6 +493,10 @@ func conflictName(pathRel, tag string) string {
 	base := strings.TrimSuffix(filepath.Base(pathRel), ext)
 	name := base + "." + tag + "-" + time.Now().UTC().Format("20060102-150405") + ext
 	return strings.TrimPrefix(filepath.Join(filepath.Dir(pathRel), name), "/")
+}
+
+func isInternalConflictFile(pathRel string) bool {
+	return strings.Contains(pathRel, ".cloud-conflict-") || strings.Contains(pathRel, ".local-conflict-")
 }
 
 func (s *Syncer) logChange(action, rel string, size int64) {
