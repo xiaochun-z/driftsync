@@ -25,12 +25,13 @@ func NewClient(httpClient *http.Client) *Client {
 }
 
 type DriveItem struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-	Size int64  `json:"size"`
-	ETag string `json:"eTag"`
-	CTag string `json:"cTag"`
-	File *struct {
+	ID                   string `json:"id"`
+	Name                 string `json:"name"`
+	Size                 int64  `json:"size"`
+	ETag                 string `json:"eTag"`
+	CTag                 string `json:"cTag"`
+	LastModifiedDateTime string `json:"lastModifiedDateTime"`
+	File                 *struct {
 		MimeType string `json:"mimeType"`
 	} `json:"file"`
 	Folder *struct {
@@ -170,7 +171,7 @@ func (c *Client) DownloadTo(ctx context.Context, itemID, destPath string) error 
 	return err
 }
 
-func (c *Client) UploadSmall(ctx context.Context, relPath string, localPath string) (*DriveItem, error) {
+func (c *Client) UploadSmall(ctx context.Context, relPath, localPath, ifMatch string) (*DriveItem, error) {
 	safe := escapePathSegments(relPath)
 	u := fmt.Sprintf("%s/me/drive/root:%s:/content", c.Base, safe)
 	f, err := os.Open(localPath)
@@ -180,6 +181,9 @@ func (c *Client) UploadSmall(ctx context.Context, relPath string, localPath stri
 	defer f.Close()
 	req, _ := http.NewRequestWithContext(ctx, "PUT", u, f)
 	req.Header.Set("Content-Type", "application/octet-stream")
+	if ifMatch != "" {
+		req.Header.Set("If-Match", ifMatch)
+	}
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return nil, err
@@ -196,7 +200,7 @@ func (c *Client) UploadSmall(ctx context.Context, relPath string, localPath stri
 	return &it, nil
 }
 
-func (c *Client) UploadLarge(ctx context.Context, relPath, localPath string, chunkMB, parallel int) (*DriveItem, error) {
+func (c *Client) UploadLarge(ctx context.Context, relPath, localPath, ifMatch string, chunkMB, parallel int) (*DriveItem, error) {
 	if chunkMB <= 0 {
 		chunkMB = 8
 	}
@@ -208,7 +212,7 @@ func (c *Client) UploadLarge(ctx context.Context, relPath, localPath string, chu
 	}
 	safe := escapePathSegments(relPath)
 
-	sessURL, err := c.createUploadSession(ctx, safe)
+	sessURL, err := c.createUploadSession(ctx, safe, ifMatch)
 	if err != nil {
 		return nil, err
 	}
@@ -319,11 +323,14 @@ func (c *Client) UploadLarge(ctx context.Context, relPath, localPath string, chu
 	return lastItem, nil
 }
 
-func (c *Client) createUploadSession(ctx context.Context, safePath string) (string, error) {
+func (c *Client) createUploadSession(ctx context.Context, safePath, ifMatch string) (string, error) {
 	u := fmt.Sprintf("%s/me/drive/root:%s:/createUploadSession", c.Base, safePath)
 	body := strings.NewReader(`{"item":{"@microsoft.graph.conflictBehavior":"replace"}}`)
 	req, _ := http.NewRequestWithContext(ctx, "POST", u, body)
 	req.Header.Set("Content-Type", "application/json")
+	if ifMatch != "" {
+		req.Header.Set("If-Match", ifMatch)
+	}
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return "", err

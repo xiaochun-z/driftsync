@@ -75,6 +75,16 @@ func (s *Syncer) SyncOnce(ctx context.Context) error {
 	// 1. Cloud First: Check for updates or restores on the server side BEFORE scanning local.
 	// This prevents local stale files from overwriting a server-side restore/version bump.
 	if s.cfg.DownloadFromCloud {
+		if s.deltaLink == "" {
+			// Try loading from DB
+			val, err := store.GetMeta(ctx, s.db, "delta_link")
+			if err == nil && val != "" {
+				s.deltaLink = val
+			} else if err != nil && err != sql.ErrNoRows {
+				log.Printf("WARN: failed to load delta_link: %v", err)
+			}
+		}
+
 		if err := s.cloudDelta(ctx); err != nil {
 			log.Printf("cloud delta err: %v", err)
 		}
@@ -97,12 +107,18 @@ func (s *Syncer) SyncOnce(ctx context.Context) error {
 }
 
 func (s *Syncer) cloudDelta(ctx context.Context) error {
+	// Capture if we are starting with a delta link (Incremental Sync)
+	// If yes, we MUST NOT run the "Reconcile" logic at the end, because the API
+	// returns only changes, not the full state.
+	isIncremental := s.deltaLink != ""
+
 	type dlTask struct {
 		ID      string
 		PathRel string
 		Size    int64
 		ETag    string
 		CTag    string
+		ModTime time.Time
 	}
 
 	var toDownload []dlTask
@@ -141,33 +157,44 @@ func (s *Syncer) cloudDelta(ctx context.Context) error {
 				if isInternalConflictFile(pathRel) {
 					continue
 				}
-				toDownload = append(toDownload, dlTask{ID: it.ID, PathRel: pathRel, Size: it.Size, ETag: it.ETag, CTag: it.CTag})
+
+				mt, _ := time.Parse(time.RFC3339, it.LastModifiedDateTime)
+				toDownload = append(toDownload, dlTask{ID: it.ID, PathRel: pathRel, Size: it.Size, ETag: it.ETag, CTag: it.CTag, ModTime: mt})
 				cloudAlive[pathRel] = struct{}{}
 			}
 		}
 		if d.NextLink != "" {
 			s.deltaLink = d.NextLink
+			if err := store.SetMeta(ctx, s.db, "delta_link", s.deltaLink); err != nil {
+				log.Printf("WARN: failed to save delta_link (next): %v", err)
+			}
 			continue
 		}
 		s.deltaLink = d.DeltaLink
+		if err := store.SetMeta(ctx, s.db, "delta_link", s.deltaLink); err != nil {
+			log.Printf("WARN: failed to save delta_link (final): %v", err)
+		}
 		break
 	}
 
 	// Reconcile: DB items missing from cloud inventory are treated as cloud-deleted.
-	dbPaths, err := store.ListAllPaths(ctx, s.db)
-	if err == nil {
-		for _, p := range dbPaths {
-			if s.filter != nil && !s.filter.ShouldSync(p, false) {
-				continue
-			}
-			if _, ok := cloudAlive[p]; !ok {
-				lp := filepath.Join(s.cfg.LocalPath, filepath.FromSlash(p))
-				if _, statErr := os.Stat(lp); statErr == nil {
-					_ = os.Remove(lp)
-					s.trackDeleted(p)
+	// CRITICAL: Only run this during FULL SYNC. In incremental mode, missing items mean "unchanged", not "deleted".
+	if !isIncremental {
+		dbPaths, err := store.ListAllPaths(ctx, s.db)
+		if err == nil {
+			for _, p := range dbPaths {
+				if s.filter != nil && !s.filter.ShouldSync(p, false) {
+					continue
 				}
-				_ = store.DeleteByPath(ctx, s.db, p)
-				delete(s.recently, p)
+				if _, ok := cloudAlive[p]; !ok {
+					lp := filepath.Join(s.cfg.LocalPath, filepath.FromSlash(p))
+					if _, statErr := os.Stat(lp); statErr == nil {
+						_ = os.Remove(lp)
+						s.trackDeleted(p)
+					}
+					_ = store.DeleteByPath(ctx, s.db, p)
+					delete(s.recently, p)
+				}
 			}
 		}
 	}
@@ -195,7 +222,14 @@ func (s *Syncer) cloudDelta(ctx context.Context) error {
 					continue
 				}
 				localHash := ""
-				if _, err := os.Stat(lp); err == nil {
+				if info, err := os.Stat(lp); err == nil {
+					// TIME CHECK: If local file is newer than cloud file, skip download.
+					// This allows 'localScanAndUpload' (next step) to push the local version to cloud.
+					if !t.ModTime.IsZero() && info.ModTime().After(t.ModTime) {
+						log.Printf("SKIP download: Local file is newer %s (Local: %v > Cloud: %v)", rel, info.ModTime().Format(time.DateTime), t.ModTime.Format(time.DateTime))
+						continue
+					}
+
 					if h, err := scan.HashFile(lp); err == nil {
 						localHash = h
 					}
@@ -232,13 +266,14 @@ func (s *Syncer) cloudDelta(ctx context.Context) error {
 
 				// 只有真正改变了本地状态时，才记为“downloaded”
 				// 条件：1) 冲突导致另存（targetPath!=lp），或 2) 原先不存在，或 3) 内容确实变化（h != localHash）
-				changed := (targetPath != lp) ||
-					(!existed) || (existed && h != localHash)
+				changed := (targetPath != lp) || (!existed) || (existed && h != localHash)
 
-				_ = store.UpsertItem(ctx, s.db, store.Item{
+				if err := store.UpsertItem(ctx, s.db, store.Item{
 					ID: t.ID, PathRel: rel, ETag: t.ETag, Size: t.Size, Mtime: 0,
 					Shasum: h, LastSrc: "cloud", LastSync: time.Now().Unix(),
-				})
+				}); err != nil {
+					log.Printf("ERR: db write failed for %s: %v", rel, err)
+				}
 				s.recently[rel] = time.Now().Add(90 * time.Second).Unix()
 
 				if changed {
@@ -335,12 +370,14 @@ func (s *Syncer) localScanAndUpload(ctx context.Context) error {
 				lp := filepath.Join(s.cfg.LocalPath, filepath.FromSlash(e.PathRel))
 
 				h, _ := scan.HashFile(lp)
+				etagToUse := ""
+
 				if old, err := store.GetByPathFull(ctx, s.db, e.PathRel); err == nil {
 					if old.LastSrc == "cloud" {
 						if h == "" {
 							continue
 						}
-
+						// 首次计算本地Hash，仅更新DB不上传
 						if old.Shasum == "" {
 							_ = store.UpsertItem(ctx, s.db, store.Item{
 								ID:       old.ID,
@@ -354,51 +391,57 @@ func (s *Syncer) localScanAndUpload(ctx context.Context) error {
 							})
 							continue
 						}
-
+						// 内容未变
 						if h == old.Shasum {
 							continue
 						}
 					} else {
+						// LastSrc=local，内容未变
 						if h != "" && h == old.Shasum {
 							continue
 						}
 					}
+					// 准备使用乐观锁 ETag
 					if old.ETag != "" {
-						if it, err := s.g.GetItemByPath(ctx, rel); err == nil && it.ETag != "" && it.ETag != old.ETag && old.Shasum != "" && h != old.Shasum {
-							conflictRel := "/" + conflictName(e.PathRel, "local-conflict")
-							log.Printf("CONFLICT: both changed; uploading local as %s", conflictRel)
-							if e.Size <= 4*1024*1024 {
-								if _, err := s.g.UploadSmall(ctx, conflictRel, lp); err != nil {
-									log.Printf("local→cloud FAIL %s: %v", e.PathRel, err)
-									continue
-								}
-							} else {
-								if _, err := s.g.UploadLarge(ctx, conflictRel, lp, s.cfg.UploadChunkMB, s.cfg.UploadParallel); err != nil {
-									log.Printf("local→cloud FAIL %s: %v", e.PathRel, err)
-									continue
-								}
-							}
-							s.recently[e.PathRel] = time.Now().Add(60 * time.Second).Unix()
-							continue
-						}
+						etagToUse = old.ETag
 					}
 				}
 
-				var it *graph.DriveItem
-				var err error
-				if e.Size <= 4*1024*1024 {
-					it, err = s.g.UploadSmall(ctx, rel, lp)
-				} else {
-					it, err = s.g.UploadLarge(ctx, rel, lp, s.cfg.UploadChunkMB, s.cfg.UploadParallel)
+				// 封装上传逻辑以便复用
+				doUpload := func(targetRel, ifMatch string) (*graph.DriveItem, error) {
+					if e.Size <= 4*1024*1024 {
+						return s.g.UploadSmall(ctx, targetRel, lp, ifMatch)
+					}
+					return s.g.UploadLarge(ctx, targetRel, lp, ifMatch, s.cfg.UploadChunkMB, s.cfg.UploadParallel)
 				}
+
+				// 尝试带 ETag 上传
+				it, err := doUpload(rel, etagToUse)
+
+				// 捕获 412 冲突 (Precondition Failed)
+				if err != nil && strings.Contains(err.Error(), "http 412") {
+					conflictRel := "/" + conflictName(e.PathRel, "local-conflict")
+					log.Printf("CONFLICT: cloud changed (412); uploading local as %s", conflictRel)
+
+					// 冲突上传（不带 ETag，强制新建/写入冲突文件）
+					if _, err := doUpload(conflictRel, ""); err != nil {
+						log.Printf("local→cloud conflict upload FAIL %s: %v", e.PathRel, err)
+					}
+					// 冲突文件已上传，跳过主文件更新
+					s.recently[e.PathRel] = time.Now().Add(60 * time.Second).Unix()
+					continue
+				}
+
 				if err != nil {
 					log.Printf("local→cloud FAIL %s: %v", e.PathRel, err)
 					continue
 				}
-				_ = store.UpsertItem(ctx, s.db, store.Item{
+				if err := store.UpsertItem(ctx, s.db, store.Item{
 					ID: it.ID, PathRel: e.PathRel, ETag: it.ETag, Size: it.Size, Mtime: e.Mtime,
 					Shasum: h, LastSrc: "local", LastSync: time.Now().Unix(),
-				})
+				}); err != nil {
+					log.Printf("ERR: db write failed for %s: %v", e.PathRel, err)
+				}
 				s.recently[e.PathRel] = time.Now().Add(60 * time.Second).Unix()
 				s.trackUploaded(e.PathRel, e.Size)
 			}
