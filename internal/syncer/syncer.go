@@ -70,22 +70,27 @@ func NewSyncer(cfg *config.Config, db *sql.DB, g *graph.Client) *Syncer {
 func (s *Syncer) SyncOnce(ctx context.Context) error {
 	loader := ui.Start(120 * time.Millisecond)
 	defer loader.Stop("")
-	if err := s.localDetectAndDeleteCloud(ctx);
-	err != nil {
-		log.Printf("local->cloud delete err: %v", err)
-	}
-	if s.cfg.UploadFromLocal {
-		if err := s.localScanAndUpload(ctx);
-		err != nil {
-			log.Printf("local upload err: %v", err)
-		}
-	}
+
+	// 1. Cloud First: Check for updates or restores on the server side BEFORE scanning local.
+	// This prevents local stale files from overwriting a server-side restore/version bump.
 	if s.cfg.DownloadFromCloud {
-		if err := s.cloudDelta(ctx);
-		err != nil {
+		if err := s.cloudDelta(ctx); err != nil {
 			log.Printf("cloud delta err: %v", err)
 		}
 	}
+
+	// 2. Local Deletes: Propagate local deletions to cloud
+	if err := s.localDetectAndDeleteCloud(ctx); err != nil {
+		log.Printf("local->cloud delete err: %v", err)
+	}
+
+	// 3. Local Uploads: Upload new/modified local files
+	if s.cfg.UploadFromLocal {
+		if err := s.localScanAndUpload(ctx); err != nil {
+			log.Printf("local upload err: %v", err)
+		}
+	}
+
 	s.printSummary()
 	return nil
 }
@@ -96,6 +101,7 @@ func (s *Syncer) cloudDelta(ctx context.Context) error {
 		PathRel string
 		Size    int64
 		ETag    string
+		CTag    string
 	}
 
 	var toDownload []dlTask
@@ -128,14 +134,14 @@ func (s *Syncer) cloudDelta(ctx context.Context) error {
 				continue
 			}
 			if it.File != nil {
-				if s.filter != nil && !s.filter.ShouldSync(pathRel, false) {
+								if s.filter != nil && !s.filter.ShouldSync(pathRel, false) {
 					continue
 				}
 				// Ignore internal conflict files from cloud (prevent loop)
 				if isInternalConflictFile(pathRel) {
 					continue
 				}
-				toDownload = append(toDownload, dlTask{ID: it.ID, PathRel: pathRel, Size: it.Size, ETag: it.ETag})
+				toDownload = append(toDownload, dlTask{ID: it.ID, PathRel: pathRel, Size: it.Size, ETag: it.ETag, CTag: it.CTag})
 				cloudAlive[pathRel] = struct{}{}
 			}
 		}
@@ -214,10 +220,14 @@ func (s *Syncer) cloudDelta(ctx context.Context) error {
 
 				existed := (localHash != "") // 下载前是否已有同名本地文件
 
-				if err := s.g.DownloadTo(ctx, t.ID, targetPath);
-				err != nil {
+								if err := s.g.DownloadTo(ctx, t.ID, targetPath);
+					err != nil {
 					log.Printf("cloud→local FAIL %s: %v", rel, err)
 					continue
+				}
+				
+				if t.CTag != "" {
+					log.Printf("  -> Downloaded version: %s", t.CTag)
 				}
 
 				h, herr := scan.HashFile(targetPath)

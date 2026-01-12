@@ -29,6 +29,7 @@ type DriveItem struct {
 	Name string `json:"name"`
 	Size int64  `json:"size"`
 	ETag string `json:"eTag"`
+	CTag string `json:"cTag"`
 	File *struct {
 		MimeType string `json:"mimeType"`
 	} `json:"file"`
