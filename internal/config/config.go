@@ -31,6 +31,7 @@ type SelectiveYAML struct {
 
 type LogOptions struct {
 	ListChecked bool `yaml:"list_checked"`
+	Verbose     bool `yaml:"verbose"`
 }
 
 func Load(path string) (*Config, error) {
