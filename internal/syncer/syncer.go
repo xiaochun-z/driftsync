@@ -302,11 +302,13 @@ func (s *Syncer) cloudDelta(ctx context.Context) error {
 				// 条件：1) 冲突导致另存（targetPath!=lp），或 2) 原先不存在，或 3) 内容确实变化（h != localHash）
 				changed := (targetPath != lp) || (!existed) || (existed && h != localHash)
 
-				if err := store.UpsertItem(ctx, s.db, store.Item{
-					ID: t.ID, PathRel: rel, ETag: t.ETag, Size: t.Size, Mtime: 0,
-					Shasum: h, LastSrc: "cloud", LastSync: time.Now().Unix(),
-				}); err != nil {
-					log.Printf("ERR: db write failed for %s: %v", rel, err)
+				if targetPath == lp {
+					if err := store.UpsertItem(ctx, s.db, store.Item{
+						ID: t.ID, PathRel: rel, ETag: t.ETag, Size: t.Size, Mtime: 0,
+						Shasum: h, LastSrc: "cloud", LastSync: time.Now().Unix(),
+					}); err != nil {
+						log.Printf("ERR: db write failed for %s: %v", rel, err)
+					}
 				}
 				s.setRecently(rel, 90*time.Second)
 
@@ -510,7 +512,8 @@ func (s *Syncer) localScanAndUpload(ctx context.Context) error {
 
 						// Strategy 1: Try forceful overwrite using wildcard ETag "*"
 						// This tells the server: "Update this resource regardless of its current version."
-						_, err := doUpload(rel, "*")
+						// FIX: Must assign to outer 'it' and 'err', do not use ':=', otherwise results are discarded/shadowed.
+						it, err = doUpload(rel, "*")
 
 						// Strategy 2: If Force Overwrite fails (e.g. 412 Strict or 409 Conflict),
 						// perform the "Nuclear Option": Delete Cloud File -> Upload as New.
