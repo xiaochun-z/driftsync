@@ -49,6 +49,8 @@ func main() {
 
 	// Flags
 	cfgPathFlag := flag.String("config", "", "Path to configuration YAML (optional)")
+	interactiveFlag := flag.Bool("interactive", false, "Enable interactive conflict resolution")
+	flag.BoolVar(interactiveFlag, "i", false, "Alias for -interactive")
 	versionFlag := flag.Bool("version", false, "Print version and exit")
 
 	flag.Parse()
@@ -76,6 +78,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to load config %s: %v", cfgPath, err)
 	}
+	// CLI flag overrides config
+	if *interactiveFlag {
+		cfg.Interactive = true
+	}
+
 	if err := cfg.Validate(); err != nil {
 		log.Fatalf("Config invalid: %v", err)
 	}

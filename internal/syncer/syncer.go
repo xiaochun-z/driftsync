@@ -29,6 +29,7 @@ type Syncer struct {
 	mu         sync.Mutex
 	uploaded   []string
 	downloaded []string
+	loader     *ui.Loader // Reference to control spinner
 }
 
 func NewSyncer(cfg *config.Config, db *sql.DB, g *graph.Client) *Syncer {
@@ -69,8 +70,8 @@ func NewSyncer(cfg *config.Config, db *sql.DB, g *graph.Client) *Syncer {
 }
 
 func (s *Syncer) SyncOnce(ctx context.Context) error {
-	loader := ui.Start(120 * time.Millisecond)
-	defer loader.Stop("")
+	s.loader = ui.Start(120 * time.Millisecond)
+	defer s.loader.Stop("")
 
 	// Ensure local root exists to prevent lstat errors later
 	if err := os.MkdirAll(s.cfg.LocalPath, 0o755); err != nil {
@@ -102,13 +103,13 @@ func (s *Syncer) SyncOnce(ctx context.Context) error {
 	}
 
 	// 3. Local Uploads: Upload new/modified local files
-		if s.cfg.UploadFromLocal {
+	if s.cfg.UploadFromLocal {
 		if err := s.localScanAndUpload(ctx); err != nil {
 			log.Printf("local upload err: %v", err)
 		}
 	}
 
-	loader.Stop("")
+	s.loader.Stop("")
 	s.printSummary()
 	return nil
 }
@@ -251,12 +252,27 @@ func (s *Syncer) cloudDelta(ctx context.Context) error {
 					conflict = true
 				}
 				targetPath := lp
+
 				if conflict {
-					ext := filepath.Ext(lp)
-					base := strings.TrimSuffix(filepath.Base(lp), ext)
-					conflictName := base + ".cloud-conflict-" + time.Now().UTC().Format("20060102-150405") + ext
-					targetPath = filepath.Join(filepath.Dir(lp), conflictName)
-					log.Printf("CONFLICT: keeping both versions for %s; cloud saved as %s", rel, conflictName)
+					choice := ui.KeepBoth
+					if s.cfg.Interactive {
+						choice = ui.ResolveConflict(s.loader, rel, "Download")
+					}
+
+					switch choice {
+					case ui.UseLocal:
+						log.Printf("CONFLICT: User selected Local. Skipping download for %s", rel)
+						continue // Skip download, keep local
+					case ui.UseCloud:
+						log.Printf("CONFLICT: User selected Cloud. Overwriting %s", rel)
+						// targetPath remains lp, will overwrite
+					case ui.KeepBoth:
+						ext := filepath.Ext(lp)
+						base := strings.TrimSuffix(filepath.Base(lp), ext)
+						conflictName := base + ".cloud-conflict-" + time.Now().UTC().Format("20060102-150405") + ext
+						targetPath = filepath.Join(filepath.Dir(lp), conflictName)
+						log.Printf("CONFLICT: keeping both versions for %s; cloud saved as %s", rel, conflictName)
+					}
 				}
 
 				existed := (localHash != "") // 下载前是否已有同名本地文件
@@ -380,10 +396,13 @@ func (s *Syncer) localScanAndUpload(ctx context.Context) error {
 				rel := "/" + e.PathRel
 				lp := filepath.Join(s.cfg.LocalPath, filepath.FromSlash(e.PathRel))
 
-				h, _ := scan.HashFile(lp)
+								h, _ := scan.HashFile(lp)
 				etagToUse := ""
-
-				if old, err := store.GetByPathFull(ctx, s.db, e.PathRel); err == nil {
+				
+				// Declare old outside so we can use it in conflict handler
+				var old *store.Item
+				if item, err := store.GetByPathFull(ctx, s.db, e.PathRel); err == nil {
+					old = item
 					if old.LastSrc == "cloud" {
 						if h == "" {
 							continue
@@ -431,16 +450,80 @@ func (s *Syncer) localScanAndUpload(ctx context.Context) error {
 
 				// 捕获 412 冲突 (Precondition Failed)
 				if err != nil && strings.Contains(err.Error(), "http 412") {
-					conflictRel := "/" + conflictName(e.PathRel, "local-conflict")
-					log.Printf("CONFLICT: cloud changed (412); uploading local as %s", conflictRel)
-
-					// 冲突上传（不带 ETag，强制新建/写入冲突文件）
-					if _, err := doUpload(conflictRel, ""); err != nil {
-						log.Printf("local→cloud conflict upload FAIL %s: %v", e.PathRel, err)
+					choice := ui.KeepBoth
+					if s.cfg.Interactive {
+						choice = ui.ResolveConflict(s.loader, e.PathRel, "Upload")
 					}
-					// 冲突文件已上传，跳过主文件更新
-					s.recently[e.PathRel] = time.Now().Add(60 * time.Second).Unix()
-					continue
+
+					switch choice {
+										case ui.UseCloud:
+						log.Printf("CONFLICT: User selected Cloud. Reverting to cloud version for %s", e.PathRel)
+						
+						// Immediate recovery: Download cloud file to overwrite local
+						// 1. Determine Cloud ID
+						targetID := ""
+						if old != nil && old.ID != "" {
+							targetID = old.ID
+						} else {
+							// Fallback: fetch ID by path if we don't have it in DB
+							if ci, err := s.g.GetItemByPath(ctx, "/"+e.PathRel); err == nil {
+								targetID = ci.ID
+							}
+						}
+
+						if targetID != "" {
+							// 2. Download
+							if err := s.g.DownloadTo(ctx, targetID, lp); err != nil {
+								log.Printf("  FAIL: could not download cloud version: %v", err)
+							} else {
+								// 3. Update DB to match new file, preventing future "Local is newer" loop
+								if newItem, err := s.g.GetItemByPath(ctx, "/"+e.PathRel); err == nil {
+									newHash, _ := scan.HashFile(lp)
+									_ = store.UpsertItem(ctx, s.db, store.Item{
+										ID:       newItem.ID,
+										PathRel:  e.PathRel,
+										ETag:     newItem.ETag,
+										Size:     newItem.Size,
+										Mtime:    0, // Reset mtime so scanner re-checks naturally or 0 to be safe
+										Shasum:   newHash,
+										LastSrc:  "cloud",
+										LastSync: time.Now().Unix(),
+									})
+									s.trackDownloaded(e.PathRel, newItem.Size)
+								}
+							}
+						}
+						
+						s.recently[e.PathRel] = time.Now().Add(60 * time.Second).Unix()
+						continue
+
+					case ui.UseLocal:
+						log.Printf("CONFLICT: User selected Local. Overwriting Cloud for %s", e.PathRel)
+						// Force upload by clearing ifMatch (or could use "*")
+						// Note: API behavior might require explicit "replace" semantics depending on endpoint,
+						// but usually empty ETag + PUT content works or we just retry without If-Match.
+						// Our doUpload helper passes "" ifMatch as-is.
+						if _, err := doUpload(rel, ""); err != nil {
+							log.Printf("local→cloud FORCE upload FAIL %s: %v", e.PathRel, err)
+						} else {
+							// Update DB after successful overwrite
+							// We need to fetch the new item metadata?
+							// The loop below will handle the DB update if err == nil
+							err = nil // Clear error to proceed to DB update below
+						}
+
+					case ui.KeepBoth:
+						conflictRel := "/" + conflictName(e.PathRel, "local-conflict")
+						log.Printf("CONFLICT: cloud changed (412); uploading local as %s", conflictRel)
+						if _, err := doUpload(conflictRel, ""); err != nil {
+							log.Printf("local→cloud conflict upload FAIL %s: %v", e.PathRel, err)
+						}
+						s.recently[e.PathRel] = time.Now().Add(60 * time.Second).Unix()
+						continue
+					}
+
+					// If we chose UseLocal and cleared the error, we fall through to the DB update logic below.
+					// If err is still set (from failed force upload), standard error logging handles it.
 				}
 
 				if err != nil {

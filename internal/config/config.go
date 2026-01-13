@@ -19,6 +19,7 @@ type Config struct {
 	UploadWorkers     int    `yaml:"upload_workers"`
 	UploadChunkMB     int    `yaml:"upload_chunk_mb"`
 	UploadParallel    int    `yaml:"upload_parallel"`
+	Interactive       bool   `yaml:"interactive"`
 
 	Sync *SelectiveYAML `yaml:"sync,omitempty"`
 	Log  *LogOptions    `yaml:"log,omitempty"`
