@@ -8,6 +8,7 @@ download_workers: 8
 upload_workers: 8
 upload_chunk_mb: 8
 upload_parallel: 2
+interactive: true
 log:
   list_checked: true   # output details
 
