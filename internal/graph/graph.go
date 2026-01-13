@@ -267,10 +267,19 @@ func (c *Client) UploadLarge(ctx context.Context, relPath, localPath, ifMatch st
 				if err == nil && (resp.StatusCode == 200 || resp.StatusCode == 201 || resp.StatusCode == 202) {
 					break
 				}
-				if resp != nil && (resp.StatusCode == 429 || resp.StatusCode >= 500) {
+
+				// Retry on network error OR server error (429/5xx)
+				shouldRetry := err != nil
+				if !shouldRetry && resp != nil && (resp.StatusCode == 429 || resp.StatusCode >= 500) {
+					shouldRetry = true
+				}
+
+				if shouldRetry {
 					// Clean up before retry
-					io.Copy(io.Discard, resp.Body)
-					resp.Body.Close()
+					if resp != nil {
+						io.Copy(io.Discard, resp.Body)
+						resp.Body.Close()
+					}
 					time.Sleep(time.Duration(1<<attempt) * 200 * time.Millisecond)
 					continue
 				}
