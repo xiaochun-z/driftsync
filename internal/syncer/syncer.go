@@ -504,7 +504,7 @@ func (s *Syncer) localScanAndUpload(ctx context.Context) error {
 						// This tells the server: "Update this resource regardless of its current version."
 						_, err := doUpload(rel, "*")
 
-						// Strategy 2: If Force Overwrite fails (e.g. 412 Strict or 409 Conflict), 
+												// Strategy 2: If Force Overwrite fails (e.g. 412 Strict or 409 Conflict), 
 						// perform the "Nuclear Option": Delete Cloud File -> Upload as New.
 						if err != nil {
 							log.Printf("  Force overwrite failed (%v). Switching to Delete+Upload strategy...", err)
@@ -512,13 +512,16 @@ func (s *Syncer) localScanAndUpload(ctx context.Context) error {
 							// 1. Delete the stubborn cloud file
 							if delErr := s.g.DeleteByPath(ctx, rel); delErr != nil {
 								log.Printf("  WARN: Failed to delete cloud file %s: %v", e.PathRel, delErr)
-								// Proceed to try upload anyway, in case delete failed because it was already gone
 							}
+
+							// 1.5 WAIT for consistency. OneDrive deletions are eventually consistent.
+							// Without this sleep, the immediate upload often hits a "ghost" file and returns 412 again.
+							time.Sleep(3 * time.Second)
 
 							// 2. Upload as a fresh file (empty ETag)
 							if _, err2 := doUpload(rel, ""); err2 != nil {
-								log.Printf("local→cloud FORCE upload FAIL %s: %v", e.PathRel, err2)
-								// Both strategies failed, keep the error set so we don't update DB incorrectly
+								log.Printf("local→cloud NUCLEAR upload FAIL %s: %v", e.PathRel, err2)
+								// Keep the original error or the new one? Let's log specifically.
 							} else {
 								err = nil // Success on second try
 							}
