@@ -72,6 +72,12 @@ func (s *Syncer) SyncOnce(ctx context.Context) error {
 	loader := ui.Start(120 * time.Millisecond)
 	defer loader.Stop("")
 
+	// Ensure local root exists to prevent lstat errors later
+	if err := os.MkdirAll(s.cfg.LocalPath, 0o755); err != nil {
+		log.Printf("create local root error: %v", err)
+		return nil
+	}
+
 	// 1. Cloud First: Check for updates or restores on the server side BEFORE scanning local.
 	// This prevents local stale files from overwriting a server-side restore/version bump.
 	if s.cfg.DownloadFromCloud {
@@ -96,12 +102,13 @@ func (s *Syncer) SyncOnce(ctx context.Context) error {
 	}
 
 	// 3. Local Uploads: Upload new/modified local files
-	if s.cfg.UploadFromLocal {
+		if s.cfg.UploadFromLocal {
 		if err := s.localScanAndUpload(ctx); err != nil {
 			log.Printf("local upload err: %v", err)
 		}
 	}
 
+	loader.Stop("")
 	s.printSummary()
 	return nil
 }
@@ -175,6 +182,10 @@ func (s *Syncer) cloudDelta(ctx context.Context) error {
 			log.Printf("WARN: failed to save delta_link (final): %v", err)
 		}
 		break
+	}
+
+	if s.cfg.Log != nil && s.cfg.Log.Verbose {
+		log.Printf("Cloud inventory: %d items found.", len(cloudAlive))
 	}
 
 	// Reconcile: DB items missing from cloud inventory are treated as cloud-deleted.

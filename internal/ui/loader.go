@@ -65,8 +65,9 @@ func (l *Loader) Stop(finalLine string) {
 		l.sp.StopMessage(finalLine)
 	}
 
-	// Stop 会处理好清理/刷新行
+		// Stop 会处理好清理/刷新行
 	_ = l.sp.Stop()
+	l.enabled = false
 
 	if finalLine == "" {
 		// 想保留空行（和旧版本行为类似），手动补一行
