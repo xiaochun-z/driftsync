@@ -205,7 +205,7 @@ func (s *Syncer) cloudDelta(ctx context.Context) error {
 						s.trackDeleted(p)
 					}
 					_ = store.DeleteByPath(ctx, s.db, p)
-					delete(s.recently, p)
+					s.clearRecently(p)
 				}
 			}
 		}
@@ -303,7 +303,7 @@ func (s *Syncer) cloudDelta(ctx context.Context) error {
 				}); err != nil {
 					log.Printf("ERR: db write failed for %s: %v", rel, err)
 				}
-				s.recently[rel] = time.Now().Add(90 * time.Second).Unix()
+				s.setRecently(rel, 90*time.Second)
 
 				if changed {
 					s.trackDownloaded(rel, t.Size)
@@ -365,7 +365,7 @@ func (s *Syncer) localScanAndUpload(ctx context.Context) error {
 			continue
 		}
 
-		if until, ok := s.recently[e.PathRel]; ok && until > time.Now().Unix() {
+		if s.isRecent(e.PathRel) {
 			continue
 		}
 		s.trackChecked(e.PathRel)
@@ -497,7 +497,7 @@ func (s *Syncer) localScanAndUpload(ctx context.Context) error {
 							}
 						}
 
-						s.recently[e.PathRel] = time.Now().Add(60 * time.Second).Unix()
+						s.setRecently(e.PathRel, 60*time.Second)
 						continue
 
 					case ui.UseLocal:
@@ -539,7 +539,7 @@ func (s *Syncer) localScanAndUpload(ctx context.Context) error {
 						if _, err := doUpload(conflictRel, ""); err != nil {
 							log.Printf("local→cloud conflict upload FAIL %s: %v", e.PathRel, err)
 						}
-						s.recently[e.PathRel] = time.Now().Add(60 * time.Second).Unix()
+						s.setRecently(e.PathRel, 60*time.Second)
 						continue
 					}
 
@@ -557,7 +557,7 @@ func (s *Syncer) localScanAndUpload(ctx context.Context) error {
 				}); err != nil {
 					log.Printf("ERR: db write failed for %s: %v", e.PathRel, err)
 				}
-				s.recently[e.PathRel] = time.Now().Add(60 * time.Second).Unix()
+				s.setRecently(e.PathRel, 60*time.Second)
 				s.trackUploaded(e.PathRel, e.Size)
 			}
 			errCh <- nil
@@ -634,7 +634,7 @@ func (s *Syncer) localDetectAndDeleteCloud(ctx context.Context) error {
 		if err := store.DeleteByPath(ctx, s.db, rel); err != nil {
 			log.Printf("db delete FAIL %s: %v", rel, err)
 		}
-		delete(s.recently, rel)
+		s.clearRecently(rel)
 	}
 	return nil
 }
@@ -722,4 +722,23 @@ func (s *Syncer) printSummary() {
 			log.Printf("  %s", p)
 		}
 	}
+}
+
+func (s *Syncer) setRecently(rel string, d time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.recently[rel] = time.Now().Add(d).Unix()
+}
+
+func (s *Syncer) isRecent(rel string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	until, ok := s.recently[rel]
+	return ok && until > time.Now().Unix()
+}
+
+func (s *Syncer) clearRecently(rel string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.recently, rel)
 }
