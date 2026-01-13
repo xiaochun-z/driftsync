@@ -233,20 +233,22 @@ func (s *Syncer) cloudDelta(ctx context.Context) error {
 					log.Printf("mkdir: %v", err)
 					continue
 				}
+				dbOld, _ := store.GetByPathFull(ctx, s.db, rel)
 				localHash := ""
-				if info, err := os.Stat(lp); err == nil {
-					// TIME CHECK: If local file is newer than cloud file, skip download.
-					// This allows 'localScanAndUpload' (next step) to push the local version to cloud.
-					if !t.ModTime.IsZero() && info.ModTime().After(t.ModTime) {
-						log.Printf("SKIP download: Local file is newer %s (Local: %v > Cloud: %v)", rel, info.ModTime().Format(time.DateTime), t.ModTime.Format(time.DateTime))
-						continue
-					}
 
-					if h, err := scan.HashFile(lp); err == nil {
-						localHash = h
+				if info, err := os.Stat(lp); err == nil {
+					// 优化：不要直接比较本地与云端的时间（避免时区/时钟错误导致的误判）。
+					// 而是比较“本地文件是否相对于上次同步有变化”。
+					// 如果本地文件的时间戳和大小与数据库记录完全一致，则认为内容未变(Clean)，跳过耗时的哈希计算。
+					if dbOld != nil && info.ModTime().Unix() == dbOld.Mtime && info.Size() == dbOld.Size {
+						localHash = dbOld.Shasum
+					} else {
+						// 文件属性有变化，或者是新文件，计算真实哈希以确认内容是否改变
+						if h, err := scan.HashFile(lp); err == nil {
+							localHash = h
+						}
 					}
 				}
-				dbOld, _ := store.GetByPathFull(ctx, s.db, rel)
 				conflict := false
 				if dbOld != nil && localHash != "" && dbOld.Shasum != "" && localHash != dbOld.Shasum && dbOld.ETag != "" && dbOld.ETag != t.ETag {
 					conflict = true
@@ -396,9 +398,9 @@ func (s *Syncer) localScanAndUpload(ctx context.Context) error {
 				rel := "/" + e.PathRel
 				lp := filepath.Join(s.cfg.LocalPath, filepath.FromSlash(e.PathRel))
 
-								h, _ := scan.HashFile(lp)
+				h, _ := scan.HashFile(lp)
 				etagToUse := ""
-				
+
 				// Declare old outside so we can use it in conflict handler
 				var old *store.Item
 				if item, err := store.GetByPathFull(ctx, s.db, e.PathRel); err == nil {
@@ -456,13 +458,13 @@ func (s *Syncer) localScanAndUpload(ctx context.Context) error {
 					}
 
 					switch choice {
-										case ui.UseCloud:
+					case ui.UseCloud:
 						log.Printf("CONFLICT: User selected Cloud. Reverting to cloud version for %s", e.PathRel)
-						
-												// Immediate recovery: Download cloud file to overwrite local
+
+						// Immediate recovery: Download cloud file to overwrite local
 						// 1. Determine Cloud ID
 						targetID := ""
-						
+
 						// CRITICAL: Always try to fetch the FRESH ID by path first.
 						// The 'old.ID' in DB might be stale (deleted/recreated on server), leading to 404s.
 						if ci, err := s.g.GetItemByPath(ctx, "/"+e.PathRel); err == nil {
@@ -494,22 +496,22 @@ func (s *Syncer) localScanAndUpload(ctx context.Context) error {
 								}
 							}
 						}
-						
+
 						s.recently[e.PathRel] = time.Now().Add(60 * time.Second).Unix()
 						continue
 
-										case ui.UseLocal:
+					case ui.UseLocal:
 						log.Printf("CONFLICT: User selected Local. Overwriting Cloud for %s", e.PathRel)
-						
+
 						// Strategy 1: Try forceful overwrite using wildcard ETag "*"
 						// This tells the server: "Update this resource regardless of its current version."
 						_, err := doUpload(rel, "*")
 
-												// Strategy 2: If Force Overwrite fails (e.g. 412 Strict or 409 Conflict), 
+						// Strategy 2: If Force Overwrite fails (e.g. 412 Strict or 409 Conflict),
 						// perform the "Nuclear Option": Delete Cloud File -> Upload as New.
 						if err != nil {
 							log.Printf("  Force overwrite failed (%v). Switching to Delete+Upload strategy...", err)
-							
+
 							// 1. Delete the stubborn cloud file
 							if delErr := s.g.DeleteByPath(ctx, rel); delErr != nil {
 								log.Printf("  WARN: Failed to delete cloud file %s: %v", e.PathRel, delErr)
@@ -528,7 +530,7 @@ func (s *Syncer) localScanAndUpload(ctx context.Context) error {
 							}
 						}
 
-						// If err is nil (Strategy 1 or 2 succeeded), the code below falls through 
+						// If err is nil (Strategy 1 or 2 succeeded), the code below falls through
 						// to update the local DB with the new cloud metadata.
 
 					case ui.KeepBoth:
