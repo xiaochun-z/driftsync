@@ -16,6 +16,9 @@ func ScanDir(root string) ([]Entry, error) {
 	var out []Entry
 	err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
 		if err != nil {
+			if os.IsPermission(err) {
+				return filepath.SkipDir
+			}
 			return err
 		}
 		rel, err := filepath.Rel(root, p)

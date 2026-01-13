@@ -292,7 +292,8 @@ func (c *Client) UploadLarge(ctx context.Context, relPath, localPath, ifMatch st
 					continue
 				}
 			}
-			resc <- result{Item: nil, Err: nil}
+			// Return actual error if upload failed (e.g. 400, 401, 403)
+			resc <- result{Item: nil, Err: fmt.Errorf("upload chunk http %d: %s", resp.StatusCode, string(body))}
 		}
 	}
 

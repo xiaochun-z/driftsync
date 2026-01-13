@@ -77,7 +77,7 @@ func (c *DeviceCodeClient) AuthorizedClient(ctx context.Context) *http.Client {
 		IdleConnTimeout:     90 * time.Second,
 	}
 	rt := &authRoundTripper{base: base, c: c}
-	return &http.Client{Transport: rt, Timeout: 60 * time.Second}
+	return &http.Client{Transport: rt, Timeout: 0}
 }
 
 func (c *DeviceCodeClient) EnsureLogin(ctx context.Context) error {
