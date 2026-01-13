@@ -92,8 +92,13 @@ func (s *Syncer) SyncOnce(ctx context.Context) error {
 			}
 		}
 
+		// CRITICAL: If cloud sync fails, we MUST stop.
+		// Continuing to step 2 (Delete) would cause data loss because
+		// files that failed to download would be perceived as "locally deleted"
+		// and then wiped from the cloud.
 		if err := s.cloudDelta(ctx); err != nil {
 			log.Printf("cloud delta err: %v", err)
+			return err
 		}
 	}
 
@@ -644,7 +649,8 @@ func conflictName(pathRel, tag string) string {
 	ext := filepath.Ext(pathRel)
 	base := strings.TrimSuffix(filepath.Base(pathRel), ext)
 	name := base + "." + tag + "-" + time.Now().UTC().Format("20060102-150405") + ext
-	return strings.TrimPrefix(filepath.Join(filepath.Dir(pathRel), name), "/")
+	// Use ToSlash to ensure Windows backslashes are converted to forward slashes for Graph API
+	return filepath.ToSlash(strings.TrimPrefix(filepath.Join(filepath.Dir(pathRel), name), "/"))
 }
 
 func isInternalConflictFile(pathRel string) bool {
