@@ -17,7 +17,12 @@ func ScanDir(root string) ([]Entry, error) {
 	err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
 		if err != nil {
 			if os.IsPermission(err) {
-				return filepath.SkipDir
+				// BUG FIX: If SkipDir is returned for a file, the rest of the directory is skipped.
+				// Only return SkipDir if it is actually a directory.
+				if d != nil && d.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil // Skip this file, continue walking
 			}
 			return err
 		}

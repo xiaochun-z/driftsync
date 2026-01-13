@@ -522,11 +522,12 @@ func (s *Syncer) localScanAndUpload(ctx context.Context) error {
 							time.Sleep(3 * time.Second)
 
 							// 2. Upload as a fresh file (empty ETag)
-							if _, err2 := doUpload(rel, ""); err2 != nil {
+							// BUG FIX: Capture the new item (it2) so we don't upsert nil/stale 'it' into DB later.
+							if it2, err2 := doUpload(rel, ""); err2 != nil {
 								log.Printf("local→cloud NUCLEAR upload FAIL %s: %v", e.PathRel, err2)
-								// Keep the original error or the new one? Let's log specifically.
 							} else {
-								err = nil // Success on second try
+								it = it2  // Update 'it' to the successfully uploaded item
+								err = nil // Clear error so we proceed to DB update
 							}
 						}
 
