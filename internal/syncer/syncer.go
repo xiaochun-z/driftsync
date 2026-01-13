@@ -459,16 +459,17 @@ func (s *Syncer) localScanAndUpload(ctx context.Context) error {
 										case ui.UseCloud:
 						log.Printf("CONFLICT: User selected Cloud. Reverting to cloud version for %s", e.PathRel)
 						
-						// Immediate recovery: Download cloud file to overwrite local
+												// Immediate recovery: Download cloud file to overwrite local
 						// 1. Determine Cloud ID
 						targetID := ""
-						if old != nil && old.ID != "" {
+						
+						// CRITICAL: Always try to fetch the FRESH ID by path first.
+						// The 'old.ID' in DB might be stale (deleted/recreated on server), leading to 404s.
+						if ci, err := s.g.GetItemByPath(ctx, "/"+e.PathRel); err == nil {
+							targetID = ci.ID
+						} else if old != nil && old.ID != "" {
+							// Fallback to DB ID only if path lookup fails (e.g. file moved?)
 							targetID = old.ID
-						} else {
-							// Fallback: fetch ID by path if we don't have it in DB
-							if ci, err := s.g.GetItemByPath(ctx, "/"+e.PathRel); err == nil {
-								targetID = ci.ID
-							}
 						}
 
 						if targetID != "" {
