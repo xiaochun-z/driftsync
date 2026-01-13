@@ -497,20 +497,35 @@ func (s *Syncer) localScanAndUpload(ctx context.Context) error {
 						s.recently[e.PathRel] = time.Now().Add(60 * time.Second).Unix()
 						continue
 
-					case ui.UseLocal:
+										case ui.UseLocal:
 						log.Printf("CONFLICT: User selected Local. Overwriting Cloud for %s", e.PathRel)
-						// Force upload by clearing ifMatch (or could use "*")
-						// Note: API behavior might require explicit "replace" semantics depending on endpoint,
-						// but usually empty ETag + PUT content works or we just retry without If-Match.
-						// Our doUpload helper passes "" ifMatch as-is.
-						if _, err := doUpload(rel, ""); err != nil {
-							log.Printf("local→cloud FORCE upload FAIL %s: %v", e.PathRel, err)
-						} else {
-							// Update DB after successful overwrite
-							// We need to fetch the new item metadata?
-							// The loop below will handle the DB update if err == nil
-							err = nil // Clear error to proceed to DB update below
+						
+						// Strategy 1: Try forceful overwrite using wildcard ETag "*"
+						// This tells the server: "Update this resource regardless of its current version."
+						_, err := doUpload(rel, "*")
+
+						// Strategy 2: If Force Overwrite fails (e.g. 412 Strict or 409 Conflict), 
+						// perform the "Nuclear Option": Delete Cloud File -> Upload as New.
+						if err != nil {
+							log.Printf("  Force overwrite failed (%v). Switching to Delete+Upload strategy...", err)
+							
+							// 1. Delete the stubborn cloud file
+							if delErr := s.g.DeleteByPath(ctx, rel); delErr != nil {
+								log.Printf("  WARN: Failed to delete cloud file %s: %v", e.PathRel, delErr)
+								// Proceed to try upload anyway, in case delete failed because it was already gone
+							}
+
+							// 2. Upload as a fresh file (empty ETag)
+							if _, err2 := doUpload(rel, ""); err2 != nil {
+								log.Printf("local→cloud FORCE upload FAIL %s: %v", e.PathRel, err2)
+								// Both strategies failed, keep the error set so we don't update DB incorrectly
+							} else {
+								err = nil // Success on second try
+							}
 						}
+
+						// If err is nil (Strategy 1 or 2 succeeded), the code below falls through 
+						// to update the local DB with the new cloud metadata.
 
 					case ui.KeepBoth:
 						conflictRel := "/" + conflictName(e.PathRel, "local-conflict")
