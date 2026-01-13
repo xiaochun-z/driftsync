@@ -250,24 +250,27 @@ func (c *Client) UploadLarge(ctx context.Context, relPath, localPath, ifMatch st
 				resc <- result{Err: err}
 				continue
 			}
-			if _, err := f.Seek(p.Start, io.SeekStart); err != nil {
-				f.Close()
-				resc <- result{Err: err}
-				continue
-			}
-			lim := io.LimitReader(f, p.End-p.Start+1)
-
-			req, _ := http.NewRequestWithContext(ctx, "PUT", sessURL, lim)
-			req.Header.Set("Content-Length", strconv.FormatInt(p.End-p.Start+1, 10))
-			req.Header.Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", p.Start, p.End, size))
-
 			var resp *http.Response
 			for attempt := 0; attempt < 5; attempt++ {
+				// FIX: Seek and recreate request body inside loop to ensure retries carry data
+				if _, err := f.Seek(p.Start, io.SeekStart); err != nil {
+					err = fmt.Errorf("seek error: %w", err)
+					break
+				}
+				lim := io.LimitReader(f, p.End-p.Start+1)
+
+				req, _ := http.NewRequestWithContext(ctx, "PUT", sessURL, lim)
+				req.Header.Set("Content-Length", strconv.FormatInt(p.End-p.Start+1, 10))
+				req.Header.Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", p.Start, p.End, size))
+
 				resp, err = c.HTTP.Do(req)
 				if err == nil && (resp.StatusCode == 200 || resp.StatusCode == 201 || resp.StatusCode == 202) {
 					break
 				}
 				if resp != nil && (resp.StatusCode == 429 || resp.StatusCode >= 500) {
+					// Clean up before retry
+					io.Copy(io.Discard, resp.Body)
+					resp.Body.Close()
 					time.Sleep(time.Duration(1<<attempt) * 200 * time.Millisecond)
 					continue
 				}

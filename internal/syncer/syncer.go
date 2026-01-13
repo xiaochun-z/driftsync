@@ -142,7 +142,7 @@ func (s *Syncer) cloudDelta(ctx context.Context) error {
 
 			if it.Deleted != nil {
 				lp := filepath.Join(s.cfg.LocalPath, filepath.FromSlash(pathRel))
-				_ = os.Remove(lp)
+				_ = os.RemoveAll(lp)
 				if err := store.DeleteByPath(ctx, s.db, pathRel); err != nil {
 					log.Printf("db delete FAIL %s: %v", pathRel, err)
 				}
