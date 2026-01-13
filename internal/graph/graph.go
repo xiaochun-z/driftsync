@@ -301,6 +301,12 @@ func (c *Client) UploadLarge(ctx context.Context, relPath, localPath, ifMatch st
 					continue
 				}
 			}
+			// 202 Accepted is returned for intermediate chunks, which is a success.
+			if resp.StatusCode == 202 {
+				resc <- result{Item: nil, Err: nil}
+				continue
+			}
+
 			// Return actual error if upload failed (e.g. 400, 401, 403)
 			resc <- result{Item: nil, Err: fmt.Errorf("upload chunk http %d: %s", resp.StatusCode, string(body))}
 		}
