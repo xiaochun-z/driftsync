@@ -44,7 +44,9 @@ func ScanDir(root string) ([]Entry, error) {
 
 		info, err := d.Info()
 		if err != nil {
-			return err
+			// Robustness: On Windows/macOS, some system files or cloud placeholders
+			// might be unreadable. Skip them instead of aborting the whole sync.
+			return nil
 		}
 		out = append(out, Entry{
 			PathRel: filepath.ToSlash(rel),

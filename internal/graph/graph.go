@@ -237,30 +237,66 @@ func renameWithRetry(src, dest string) error {
 func (c *Client) UploadSmall(ctx context.Context, relPath, localPath, ifMatch string) (*DriveItem, error) {
 	safe := escapePathSegments(relPath)
 	u := fmt.Sprintf("%s/me/drive/root:%s:/content", c.Base, safe)
-	f, err := os.Open(localPath)
-	if err != nil {
-		return nil, err
+
+	var lastErr error
+	// Retry loop for network blips or Windows file locks
+	for attempt := 0; attempt < 5; attempt++ {
+		if attempt > 0 {
+			time.Sleep(time.Duration(attempt*500) * time.Millisecond)
+		}
+
+		// Re-open file in each attempt to handle Windows file locking/sharing violations
+		f, err := os.Open(localPath)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		req, err := http.NewRequestWithContext(ctx, "PUT", u, f)
+		if err != nil {
+			f.Close()
+			return nil, err // Fatal error building request
+		}
+		req.Header.Set("Content-Type", "application/octet-stream")
+		if ifMatch != "" {
+			req.Header.Set("If-Match", ifMatch)
+		}
+
+		resp, err := c.HTTP.Do(req)
+		if err != nil {
+			f.Close()
+			lastErr = err
+			continue
+		}
+
+		// 429 Too Many Requests or 5xx Server Errors -> Retry
+		// 412 Precondition Failed -> Do NOT retry (it's a logic conflict)
+		if resp.StatusCode == 429 || resp.StatusCode >= 500 {
+			b, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			f.Close()
+			lastErr = fmt.Errorf("upload http %d: %s", resp.StatusCode, string(b))
+			continue
+		}
+
+		if resp.StatusCode >= 300 {
+			b, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			f.Close()
+			return nil, fmt.Errorf("upload http %d: %s", resp.StatusCode, string(b))
+		}
+
+		var it DriveItem
+		if err := json.NewDecoder(resp.Body).Decode(&it); err != nil {
+			resp.Body.Close()
+			f.Close()
+			return nil, err
+		}
+		resp.Body.Close()
+		f.Close()
+		return &it, nil
 	}
-	defer f.Close()
-	req, _ := http.NewRequestWithContext(ctx, "PUT", u, f)
-	req.Header.Set("Content-Type", "application/octet-stream")
-	if ifMatch != "" {
-		req.Header.Set("If-Match", ifMatch)
-	}
-	resp, err := c.HTTP.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		b, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("upload http %d: %s", resp.StatusCode, string(b))
-	}
-	var it DriveItem
-	if err := json.NewDecoder(resp.Body).Decode(&it); err != nil {
-		return nil, err
-	}
-	return &it, nil
+	return nil, fmt.Errorf("upload small failed after retries: %w", lastErr)
 }
 
 func (c *Client) UploadLarge(ctx context.Context, relPath, localPath, ifMatch string, chunkMB, parallel int) (*DriveItem, error) {

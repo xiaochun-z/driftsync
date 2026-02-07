@@ -685,8 +685,15 @@ func conflictName(pathRel, tag string) string {
 	ext := filepath.Ext(pathRel)
 	base := strings.TrimSuffix(filepath.Base(pathRel), ext)
 	name := base + "." + tag + "-" + time.Now().UTC().Format("20060102-150405") + ext
-	// Use ToSlash to ensure Windows backslashes are converted to forward slashes for Graph API
-	return filepath.ToSlash(strings.TrimPrefix(filepath.Join(filepath.Dir(pathRel), name), "/"))
+	
+	// Construct OS-specific path first
+	fullOSPath := filepath.Join(filepath.Dir(pathRel), name)
+	
+	// Normalize to forward slashes for Graph API
+	normalized := filepath.ToSlash(fullOSPath)
+	
+	// Remove leading slash if present (ensure relative path consistency)
+	return strings.TrimPrefix(normalized, "/")
 }
 
 func isInternalConflictFile(pathRel string) bool {
