@@ -36,6 +36,12 @@ func ScanDir(root string) ([]Entry, error) {
 		if rel == "." {
 			return nil
 		}
+		// Robustness: Skip symlinks, sockets, pipes, devices to avoid
+		// infinite sync loops (size mismatch) or read errors.
+		if !d.IsDir() && !d.Type().IsRegular() {
+			return nil
+		}
+
 		info, err := d.Info()
 		if err != nil {
 			return err

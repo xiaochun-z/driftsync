@@ -188,10 +188,50 @@ func (c *Client) DownloadTo(ctx context.Context, itemID, destPath string) error 
 	// Atomic rename
 	// FIX: Windows does not allow renaming if the destination exists.
 	// We must remove the destination explicitly.
-	if err := os.Remove(destPath); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("remove existing before rename: %w", err)
+	// Robustness: Retry logic for Windows file locking issues (AV scanners, indexers).
+	return renameWithRetry(tmpPath, destPath)
+}
+
+func renameWithRetry(src, dest string) error {
+	// 1. Try direct rename (atomic on POSIX, works on Windows if dest doesn't exist)
+	if err := os.Rename(src, dest); err == nil {
+		return nil
 	}
-	return os.Rename(tmpPath, destPath)
+
+	// 2. Windows-safe strategy: Rename Dest -> Backup, Src -> Dest, Delete Backup
+	// This prevents data loss if the final rename fails.
+	bak := dest + ".old.tmp"
+	_ = os.Remove(bak) // cleanup potential leftover
+
+	var lastErr error
+	for i := 0; i < 3; i++ {
+		// Attempt to move existing file out of the way
+		if err := os.Rename(dest, bak); err != nil {
+			if os.IsNotExist(err) {
+				// Dest disappeared? Just try moving src -> dest again
+				if err := os.Rename(src, dest); err == nil {
+					return nil
+				}
+			}
+			lastErr = fmt.Errorf("backup dest failed: %w", err)
+			time.Sleep(200 * time.Millisecond)
+			continue
+		}
+
+		// Move new file to dest
+		if err := os.Rename(src, dest); err != nil {
+			// CRITICAL: Rollback! Try to move backup back to dest
+			_ = os.Rename(bak, dest)
+			lastErr = fmt.Errorf("replace dest failed (rolled back): %w", err)
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
+
+		// Success! Cleanup backup
+		_ = os.Remove(bak)
+		return nil
+	}
+	return fmt.Errorf("renameWithRetry failed: %w", lastErr)
 }
 
 func (c *Client) UploadSmall(ctx context.Context, relPath, localPath, ifMatch string) (*DriveItem, error) {
@@ -245,7 +285,15 @@ func (c *Client) UploadLarge(ctx context.Context, relPath, localPath, ifMatch st
 		return nil, err
 	}
 	size := stat.Size()
-	chunk := int64(chunkMB) * 1024 * 1024
+
+	// Graph API requires fragment size to be a multiple of 320 KiB (327,680 bytes).
+	const graphFragmentSize = 327680
+	rawChunk := int64(chunkMB) * 1024 * 1024
+	// Round down to the nearest multiple of graphFragmentSize
+	chunk := (rawChunk / graphFragmentSize) * graphFragmentSize
+	if chunk == 0 {
+		chunk = graphFragmentSize
+	}
 
 	type part struct{ Start, End int64 }
 	var parts []part

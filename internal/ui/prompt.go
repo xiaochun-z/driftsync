@@ -23,6 +23,12 @@ var (
 
 // ResolveConflict asks the user to resolve a conflict.
 func ResolveConflict(loader *Loader, path, direction string) ConflictChoice {
+	// Robustness: If strictly non-interactive or not a TTY, default to KeepBoth
+	// to prevent hanging indefinitely in background jobs.
+	if !isTerminal() {
+		return KeepBoth
+	}
+
 	promptMu.Lock()
 	defer promptMu.Unlock()
 
@@ -41,12 +47,13 @@ func ResolveConflict(loader *Loader, path, direction string) ConflictChoice {
 	}()
 
 	// Clear line just in case
-	fmt.Print("r")
-	
+	fmt.Print("\r")
+
 	// Show prompt with explicit Println to safely handle newlines
 	fmt.Println("")
-	fmt.Printf("033[33m[CONFLICT]033[0m %s (%s)", path, direction)
-	fmt.Println("") 
+	// Robustness: Removed ANSI color codes for better Windows CMD compatibility
+	fmt.Printf("[CONFLICT] %s (%s)", path, direction)
+	fmt.Println("")
 	fmt.Println("  [1] Keep Both (Rename new version)")
 	fmt.Println("  [2] Use Cloud Version (Overwrite Local)")
 	fmt.Println("  [3] Use Local Version (Overwrite Cloud)")
