@@ -103,13 +103,15 @@ func main() {
 	g := graph.NewClient(httpClient)
 
 	if err := authClient.EnsureLogin(ctx); err != nil {
-		log.Fatalf("login failed: %v", err)
+		log.Printf("login failed: %v", err)
+		return
 	}
 
 	s := syncer.NewSyncer(cfg, db, g)
 
 	if err := s.SyncOnce(ctx); err != nil {
-		log.Fatalf("sync error: %v", err)
+		log.Printf("sync error: %v", err)
+		return
 	}
 
 	log.Printf("Sync completed. Database stored at: %s", dbPath)

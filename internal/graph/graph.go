@@ -186,6 +186,11 @@ func (c *Client) DownloadTo(ctx context.Context, itemID, destPath string) error 
 	}
 
 	// Atomic rename
+	// FIX: Windows does not allow renaming if the destination exists.
+	// We must remove the destination explicitly.
+	if err := os.Remove(destPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove existing before rename: %w", err)
+	}
 	return os.Rename(tmpPath, destPath)
 }
 
@@ -277,7 +282,10 @@ func (c *Client) UploadLarge(ctx context.Context, relPath, localPath, ifMatch st
 				}
 				lim := io.LimitReader(f, p.End-p.Start+1)
 
-				req, _ := http.NewRequestWithContext(ctx, "PUT", sessURL, lim)
+				req, err := http.NewRequestWithContext(ctx, "PUT", sessURL, lim)
+				if err != nil {
+					break // Fatal error constructing request
+				}
 				req.Header.Set("Content-Length", strconv.FormatInt(p.End-p.Start+1, 10))
 				req.Header.Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", p.Start, p.End, size))
 
