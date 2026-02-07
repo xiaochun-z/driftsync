@@ -36,3 +36,4 @@ config.yaml
 driftsync.db
 onedrive_root/
 code*.txt
+dist/
