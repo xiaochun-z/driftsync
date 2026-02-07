@@ -27,6 +27,7 @@ type Syncer struct {
 	filter     *selective.List
 	recently   map[string]int64
 	mu         sync.Mutex
+	dbMu       sync.Mutex // Serializes DB writes to prevent SQLITE_BUSY
 	uploaded   []string
 	downloaded []string
 	loader     *ui.Loader // Reference to control spinner
@@ -148,9 +149,11 @@ func (s *Syncer) cloudDelta(ctx context.Context) error {
 			if it.Deleted != nil {
 				lp := filepath.Join(s.cfg.LocalPath, filepath.FromSlash(pathRel))
 				_ = os.RemoveAll(lp)
+				s.dbMu.Lock()
 				if err := store.DeleteByPath(ctx, s.db, pathRel); err != nil {
 					log.Printf("db delete FAIL %s: %v", pathRel, err)
 				}
+				s.dbMu.Unlock()
 				continue
 			}
 			if it.Folder != nil {
@@ -178,15 +181,19 @@ func (s *Syncer) cloudDelta(ctx context.Context) error {
 		}
 		if d.NextLink != "" {
 			s.deltaLink = d.NextLink
+			s.dbMu.Lock()
 			if err := store.SetMeta(ctx, s.db, "delta_link", s.deltaLink); err != nil {
 				log.Printf("WARN: failed to save delta_link (next): %v", err)
 			}
+			s.dbMu.Unlock()
 			continue
 		}
 		s.deltaLink = d.DeltaLink
+		s.dbMu.Lock()
 		if err := store.SetMeta(ctx, s.db, "delta_link", s.deltaLink); err != nil {
 			log.Printf("WARN: failed to save delta_link (final): %v", err)
 		}
+		s.dbMu.Unlock()
 		break
 	}
 
@@ -209,7 +216,9 @@ func (s *Syncer) cloudDelta(ctx context.Context) error {
 						_ = os.Remove(lp)
 						s.trackDeleted(p)
 					}
+					s.dbMu.Lock()
 					_ = store.DeleteByPath(ctx, s.db, p)
+					s.dbMu.Unlock()
 					s.clearRecently(p)
 				}
 			}
@@ -303,11 +312,15 @@ func (s *Syncer) cloudDelta(ctx context.Context) error {
 				changed := (targetPath != lp) || (!existed) || (existed && h != localHash)
 
 				if targetPath == lp {
+					s.dbMu.Lock()
 					if err := store.UpsertItem(ctx, s.db, store.Item{
 						ID: t.ID, PathRel: rel, ETag: t.ETag, Size: t.Size, Mtime: 0,
 						Shasum: h, LastSrc: "cloud", LastSync: time.Now().Unix(),
 					}); err != nil {
+						s.dbMu.Unlock()
 						log.Printf("ERR: db write failed for %s: %v", rel, err)
+					} else {
+						s.dbMu.Unlock()
 					}
 				}
 				s.setRecently(rel, 90*time.Second)
@@ -418,6 +431,7 @@ func (s *Syncer) localScanAndUpload(ctx context.Context) error {
 						}
 						// 首次计算本地Hash，仅更新DB不上传
 						if old.Shasum == "" {
+							s.dbMu.Lock()
 							_ = store.UpsertItem(ctx, s.db, store.Item{
 								ID:       old.ID,
 								PathRel:  old.PathRel,
@@ -428,6 +442,7 @@ func (s *Syncer) localScanAndUpload(ctx context.Context) error {
 								LastSrc:  old.LastSrc,
 								LastSync: time.Now().Unix(),
 							})
+							s.dbMu.Unlock()
 							continue
 						}
 						// 内容未变
@@ -489,6 +504,7 @@ func (s *Syncer) localScanAndUpload(ctx context.Context) error {
 								// 3. Update DB to match new file, preventing future "Local is newer" loop
 								if newItem, err := s.g.GetItemByPath(ctx, "/"+e.PathRel); err == nil {
 									newHash, _ := scan.HashFile(lp)
+									s.dbMu.Lock()
 									_ = store.UpsertItem(ctx, s.db, store.Item{
 										ID:       newItem.ID,
 										PathRel:  e.PathRel,
@@ -499,6 +515,7 @@ func (s *Syncer) localScanAndUpload(ctx context.Context) error {
 										LastSrc:  "cloud",
 										LastSync: time.Now().Unix(),
 									})
+									s.dbMu.Unlock()
 									s.trackDownloaded(e.PathRel, newItem.Size)
 								}
 							}
@@ -560,12 +577,14 @@ func (s *Syncer) localScanAndUpload(ctx context.Context) error {
 					log.Printf("local→cloud FAIL %s: %v", e.PathRel, err)
 					continue
 				}
+				s.dbMu.Lock()
 				if err := store.UpsertItem(ctx, s.db, store.Item{
 					ID: it.ID, PathRel: e.PathRel, ETag: it.ETag, Size: it.Size, Mtime: e.Mtime,
 					Shasum: h, LastSrc: "local", LastSync: time.Now().Unix(),
 				}); err != nil {
 					log.Printf("ERR: db write failed for %s: %v", e.PathRel, err)
 				}
+				s.dbMu.Unlock()
 				s.setRecently(e.PathRel, 60*time.Second)
 				s.trackUploaded(e.PathRel, e.Size)
 			}
@@ -633,6 +652,18 @@ func (s *Syncer) localDetectAndDeleteCloud(ctx context.Context) error {
 	}
 
 	for _, rel := range toDelete {
+		// SAFETY CHECK: Verify if file exists but was skipped by scanner (e.g. permission error).
+		// If os.Stat succeeds (err==nil) or fails with permission/other error (not IsNotExist),
+		// we MUST NOT delete the cloud copy.
+		localPath := filepath.Join(s.cfg.LocalPath, filepath.FromSlash(rel))
+		if _, err := os.Stat(localPath); err == nil {
+			log.Printf("SAFETY: Skipping delete for %s: file exists locally but was not scanned (permissions?)", rel)
+			continue
+		} else if !os.IsNotExist(err) {
+			log.Printf("SAFETY: Skipping delete for %s: stat error: %v", rel, err)
+			continue
+		}
+
 		graphPath := "/" + rel
 
 		if err := s.g.DeleteByPath(ctx, graphPath); err != nil {
@@ -640,9 +671,11 @@ func (s *Syncer) localDetectAndDeleteCloud(ctx context.Context) error {
 			continue
 		}
 		s.trackDeleted(rel)
+		s.dbMu.Lock()
 		if err := store.DeleteByPath(ctx, s.db, rel); err != nil {
 			log.Printf("db delete FAIL %s: %v", rel, err)
 		}
+		s.dbMu.Unlock()
 		s.clearRecently(rel)
 	}
 	return nil

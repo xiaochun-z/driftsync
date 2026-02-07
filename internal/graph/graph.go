@@ -148,7 +148,7 @@ func (c *Client) DownloadTo(ctx context.Context, itemID, destPath string) error 
 		return fmt.Errorf("no @microsoft.graph.downloadUrl on item %s", itemID)
 	}
 
-	plain := &http.Client{Timeout: 120 * time.Second} // SECURITY: add timeout to avoid hanging requests
+	plain := &http.Client{Timeout: 0} // FIX: Disable timeout for large file downloads; rely on ctx cancel or keep-alives
 	req2, _ := http.NewRequestWithContext(ctx, "GET", dl, nil)
 	resp2, err := plain.Do(req2)
 	if err != nil {
@@ -162,13 +162,31 @@ func (c *Client) DownloadTo(ctx context.Context, itemID, destPath string) error 
 	if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
 		return err
 	}
-	f, err := os.Create(destPath)
+
+	// FIX: Atomic write. Download to .tmp first, then rename.
+	tmpPath := destPath + ".tmp"
+	f, err := os.Create(tmpPath)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	_, err = io.Copy(f, resp2.Body)
-	return err
+	// Ensure temp file is cleaned up if we return early
+	defer func() {
+		f.Close()
+		if err != nil {
+			os.Remove(tmpPath)
+		}
+	}()
+
+	if _, err = io.Copy(f, resp2.Body); err != nil {
+		return err
+	}
+	// Close explicitly to ensure flush
+	if err = f.Close(); err != nil {
+		return err
+	}
+
+	// Atomic rename
+	return os.Rename(tmpPath, destPath)
 }
 
 func (c *Client) UploadSmall(ctx context.Context, relPath, localPath, ifMatch string) (*DriveItem, error) {
