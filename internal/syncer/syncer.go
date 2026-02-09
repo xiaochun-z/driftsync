@@ -384,7 +384,7 @@ func (s *Syncer) downloadWorker(ctx context.Context, id, rel, etag, remoteSha256
 			log.Printf("CONFLICT [Overwrite]: Downloading cloud version to %s", rel)
 			// targetPath = lp
 		case ui.KeepBoth:
-			targetPath = s.makeConflictPath(lp, "cloud")
+			targetPath = makeConflictPath(lp, "cloud")
 			log.Printf("CONFLICT [Keep Both]: Downloading to %s", targetPath)
 		}
 	}
@@ -595,7 +595,7 @@ func (s *Syncer) uploadWorker(ctx context.Context, e scan.Entry) error {
 			it, err = doUpload(rel, "*") 
 			
 		case ui.KeepBoth:
-			conflictPath := "/" + s.makeConflictName(e.PathRel, "local")
+			conflictPath := "/" + makeConflictName(e.PathRel, "local")
 			log.Printf("CONFLICT [Keep Both]: Uploading as %s", conflictPath)
 			it, err = doUpload(conflictPath, "")
 		}
@@ -632,14 +632,14 @@ func (s *Syncer) itemPathRel(it graph.DriveItem) string {
 	return strings.TrimPrefix(filepath.ToSlash(filepath.Join(pp, it.Name)), "/")
 }
 
-func (s *Syncer) makeConflictPath(localPath, tag string) string {
+func makeConflictPath(localPath, tag string) string {
 	ext := filepath.Ext(localPath)
 	base := strings.TrimSuffix(filepath.Base(localPath), ext)
 	name := fmt.Sprintf("%s.%s-conflict-%s%s", base, tag, time.Now().Format("20060102-150405"), ext)
 	return filepath.Join(filepath.Dir(localPath), name)
 }
 
-func (s *Syncer) makeConflictName(pathRel, tag string) string {
+func makeConflictName(pathRel, tag string) string {
 	ext := filepath.Ext(pathRel)
 	base := strings.TrimSuffix(filepath.Base(pathRel), ext)
 	return fmt.Sprintf("%s.%s-conflict-%s%s", base, tag, time.Now().Format("20060102-150405"), ext)
