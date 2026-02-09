@@ -1,0 +1,11 @@
+
+tenant: consumers
+client_id: 3ae224c9-f16c-42d1-bf5d-44151f2b99fa
+local_path: "/workspaces/driftsync/cmd/e2e/test_workspace/local_files"
+download_from_cloud: true
+upload_from_local: true
+log:
+  verbose: true
+sync:
+  include:
+    - "/DriftSync_E2E_Test"

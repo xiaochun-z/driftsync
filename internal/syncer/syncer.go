@@ -81,7 +81,13 @@ func (s *Syncer) SyncOnce(ctx context.Context) error {
 		return fmt.Errorf("create local root error: %w", err)
 	}
 
-	// 1. Cloud First: Check for updates/deletes from cloud.
+	// 1. Local Deletes First: Propagate local deletions to cloud.
+	// This prevents the cloud from "saving" deleted local files by re-downloading them.
+	if err := s.localDetectAndDeleteCloud(ctx); err != nil {
+		log.Printf("local->cloud delete err: %v", err)
+	}
+
+	// 2. Cloud Updates: Check for updates/deletes from cloud.
 	if s.cfg.DownloadFromCloud {
 		if s.deltaLink == "" {
 			val, err := store.GetMeta(ctx, s.db, "delta_link")
@@ -92,11 +98,6 @@ func (s *Syncer) SyncOnce(ctx context.Context) error {
 		if err := s.cloudDelta(ctx); err != nil {
 			return err
 		}
-	}
-
-	// 2. Local Deletes: Propagate local deletions to cloud.
-	if err := s.localDetectAndDeleteCloud(ctx); err != nil {
-		log.Printf("local->cloud delete err: %v", err)
 	}
 
 	// 3. Local Uploads: Upload new/modified local files.
@@ -351,8 +352,14 @@ func (s *Syncer) downloadWorker(ctx context.Context, id, rel, etag, remoteSha256
 	
 	if localExists && dbOld != nil {
 		localChanged := localHash != dbOld.Shasum
-		cloudChanged := etag != dbOld.ETag
-		
+		// SMART CONFLICT: Use Hash to check if cloud content actually changed
+		cloudChanged := false
+		if remoteSha256 != "" {
+			cloudChanged = (remoteSha256 != dbOld.Shasum)
+		} else {
+			cloudChanged = (etag != dbOld.ETag)
+		}
+
 		if localChanged && cloudChanged {
 			conflict = true
 		}
@@ -382,12 +389,8 @@ func (s *Syncer) downloadWorker(ctx context.Context, id, rel, etag, remoteSha256
 		}
 	}
 
-	// Skip if identical (Fast ETag check)
-	if dbOld != nil && dbOld.ETag == etag && localHash == dbOld.Shasum {
-		return nil
-	}
-
-	// Smart Sync: If ETag changed but Content matches, update DB and skip download
+	// Smart Sync: If ETag changed but Content matches (Cloud metadata update OR same change on both sides)
+	// We handle this BEFORE downloading to prevent unnecessary conflict files.
 	if localExists && remoteSha256 != "" && localHash == remoteSha256 {
 		log.Printf("[SMART] Metadata update only (content match): %s", rel)
 		s.dbMu.Lock()
