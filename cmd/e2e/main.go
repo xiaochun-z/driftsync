@@ -243,7 +243,9 @@ func setupEnvironment() {
 
 func compileBinary() {
 	fmt.Print("🔨 正在编译最新代码... ")
-	cmd := exec.Command("go", "build", "-ldflags", "-s -w", "-o", absBinary, "../../cmd/driftsync")
+	// 模拟发布时的版本注入
+	ldflags := "-s -w -X main.version=vE2E-Test"
+	cmd := exec.Command("go", "build", "-ldflags", ldflags, "-o", absBinary, "../../cmd/driftsync")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		log.Fatalf("编译失败:\n%s", string(out))

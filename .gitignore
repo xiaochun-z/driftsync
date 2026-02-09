@@ -39,3 +39,4 @@ code*.txt
 dist/
 cmd/e2e/test_workspace/local_files
 cmd/e2e/test_workspace/driftsync.db-*
+/cmd/e2e/e2e
