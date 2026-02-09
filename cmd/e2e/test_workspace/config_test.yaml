@@ -9,3 +9,5 @@ log:
 sync:
   include:
     - "/DriftSync_E2E_Test"
+  exclude:
+    - "*.ignore"
