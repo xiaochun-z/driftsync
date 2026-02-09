@@ -36,6 +36,18 @@ func ScanDir(root string) ([]Entry, error) {
 		if rel == "." {
 			return nil
 		}
+
+		// SAFETY: Always ignore internal trash directory to prevent "Trash Loop"
+		// (uploading deleted files back to cloud).
+		if d.IsDir() && d.Name() == ".driftsync_trash" {
+			return filepath.SkipDir
+		}
+
+		// SAFETY: Ignore common system garbage files
+		if !d.IsDir() && (d.Name() == ".DS_Store" || d.Name() == "Thumbs.db" || d.Name() == "desktop.ini") {
+			return nil
+		}
+
 		// Robustness: Skip symlinks, sockets, pipes, devices to avoid
 		// infinite sync loops (size mismatch) or read errors.
 		if !d.IsDir() && !d.Type().IsRegular() {

@@ -224,8 +224,13 @@ func renameWithRetry(src, dest string) error {
 		// Move new file to dest
 		if err := os.Rename(src, dest); err != nil {
 			// CRITICAL: Rollback! Try to move backup back to dest
-			_ = os.Rename(bak, dest)
-			lastErr = fmt.Errorf("replace dest failed (rolled back): %w", err)
+			if rbErr := os.Rename(bak, dest); rbErr != nil {
+				// DISASTER: Rollback failed. The user's original file is at 'bak'.
+				// Log this strictly so the user can recover manually.
+				lastErr = fmt.Errorf("replace failed AND rollback failed! Your original file is saved at '%s'. Error: %v | RollbackErr: %v", bak, err, rbErr)
+			} else {
+				lastErr = fmt.Errorf("replace dest failed (successfully rolled back): %w", err)
+			}
 			time.Sleep(500 * time.Millisecond)
 			continue
 		}
