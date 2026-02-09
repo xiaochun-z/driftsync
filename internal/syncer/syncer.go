@@ -443,8 +443,6 @@ func (s *Syncer) moveToTrash(path string) error {
 }
 
 func (s *Syncer) localDetectAndDeleteCloud(ctx context.Context) error {
-	log.Println("[DEBUG] Starting Local->Cloud Deletion Check...")
-	
 	cur := map[string]struct{}{}
 	en, err := scan.ScanDir(s.cfg.LocalPath)
 	if err != nil {
@@ -455,41 +453,35 @@ func (s *Syncer) localDetectAndDeleteCloud(ctx context.Context) error {
 			cur[e.PathRel] = struct{}{}
 		}
 	}
-	log.Printf("[DEBUG] Scanned %d local files.", len(cur))
 
 	rows, err := s.db.QueryContext(ctx, `SELECT path_rel FROM items`)
 	if err != nil { return err }
 	defer rows.Close()
 
 	var toDelete []string
-	dbCount := 0
 	for rows.Next() {
-		dbCount++
 		var p string
 		if err := rows.Scan(&p); err != nil { return err }
-		if p == "" || p == "." { continue } 
+		if p == "" || p == "." { continue }
 		if s.filter != nil && !s.filter.ShouldSync(p, false) { continue }
-		
+
 		if _, exists := cur[p]; !exists {
-			log.Printf("[DEBUG] File in DB but missing locally: %s", p)
 			toDelete = append(toDelete, p)
 		}
 	}
-	log.Printf("[DEBUG] DB contains %d items. Found %d candidates for deletion.", dbCount, len(toDelete))
 
 	for _, rel := range toDelete {
 		lp := filepath.Join(s.cfg.LocalPath, filepath.FromSlash(rel))
-		
+
 		// SAFETY DOUBLE-CHECK
 		if _, err := os.Stat(lp); err == nil {
-			log.Printf("[SAFETY] Aborting cloud delete for %s: File exists locally (Phantom detection).", rel)
+			log.Printf("[SAFETY] Aborting cloud delete for %s: File exists locally.", rel)
 			continue
 		} else if !os.IsNotExist(err) {
 			log.Printf("[SAFETY] Aborting cloud delete for %s: FS Error %v", rel, err)
 			continue
 		}
 
-		log.Printf("[DEBUG] Deleting from Cloud: %s", rel)
 		if err := s.g.DeleteByPath(ctx, "/"+rel); err != nil {
 			log.Printf("cloud delete FAIL %s: %v", rel, err)
 			continue
