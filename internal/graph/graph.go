@@ -31,8 +31,11 @@ type DriveItem struct {
 	ETag                 string `json:"eTag"`
 	CTag                 string `json:"cTag"`
 	LastModifiedDateTime string `json:"lastModifiedDateTime"`
-	File                 *struct {
+	File *struct {
 		MimeType string `json:"mimeType"`
+		Hashes   *struct {
+			Sha256Hash string `json:"sha256Hash"`
+		} `json:"hashes"`
 	} `json:"file"`
 	Folder *struct {
 		ChildCount int `json:"childCount"`

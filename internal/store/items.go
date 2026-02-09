@@ -31,9 +31,20 @@ func UpsertItem(ctx context.Context, db *sql.DB, it Item) error {
 }
 
 func GetByPathFull(ctx context.Context, db *sql.DB, pathRel string) (*Item, error) {
-	row := db.QueryRowContext(ctx, `SELECT id, path_rel, etag, size, mtime, 
-		COALESCE(shasum, ''), COALESCE(last_src, ''), COALESCE(last_sync, 0) 
+	row := db.QueryRowContext(ctx, `SELECT id, path_rel, etag, size, mtime,
+		COALESCE(shasum, ''), COALESCE(last_src, ''), COALESCE(last_sync, 0)
 		FROM items WHERE path_rel = ?`, pathRel)
+	var it Item
+	if err := row.Scan(&it.ID, &it.PathRel, &it.ETag, &it.Size, &it.Mtime, &it.Shasum, &it.LastSrc, &it.LastSync); err != nil {
+		return nil, err
+	}
+	return &it, nil
+}
+
+func GetByID(ctx context.Context, db *sql.DB, id string) (*Item, error) {
+	row := db.QueryRowContext(ctx, `SELECT id, path_rel, etag, size, mtime,
+		COALESCE(shasum, ''), COALESCE(last_src, ''), COALESCE(last_sync, 0)
+		FROM items WHERE id = ?`, id)
 	var it Item
 	if err := row.Scan(&it.ID, &it.PathRel, &it.ETag, &it.Size, &it.Mtime, &it.Shasum, &it.LastSrc, &it.LastSync); err != nil {
 		return nil, err
