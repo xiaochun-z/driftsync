@@ -682,11 +682,38 @@ func (s *Syncer) trackChecked(rel string) {
 
 func (s *Syncer) printSummary() {
 	s.mu.Lock()
-	ups, dls, dels := len(s.uploaded), len(s.downloaded), len(s.deleted)
-	s.uploaded, s.downloaded, s.deleted = nil, nil, nil
+	// Capture snapshots of the lists
+	ups := s.uploaded
+	dls := s.downloaded
+	dels := s.deleted
+
+	// Reset internal state
+	s.uploaded = nil
+	s.downloaded = nil
+	s.deleted = nil
 	s.mu.Unlock()
 
-	log.Printf("==== SUMMARY: Up %d, Down %d, Del %d ====", ups, dls, dels)
+	// Print details
+	if len(ups) > 0 {
+		log.Println("☁️  Uploaded:")
+		for _, f := range ups {
+			log.Printf("   ↑ %s", f)
+		}
+	}
+	if len(dls) > 0 {
+		log.Println("⬇️  Downloaded:")
+		for _, f := range dls {
+			log.Printf("   ↓ %s", f)
+		}
+	}
+	if len(dels) > 0 {
+		log.Println("🗑️  Deleted:")
+		for _, f := range dels {
+			log.Printf("   × %s", f)
+		}
+	}
+
+	log.Printf("==== SUMMARY: Up %d, Down %d, Del %d ====", len(ups), len(dls), len(dels))
 }
 
 func (s *Syncer) setRecently(rel string, d time.Duration) {
