@@ -9,6 +9,7 @@ RUN go install github.com/goreleaser/goreleaser/v2@latest && \
 
 ENV CGO_ENABLED=0
 
-# git tag v0.7.20
+# git tag v0.7.25
 # goreleaser release --snapshot --clean --skip=publish
-# 
+# cd ./cmd/e2e
+# go run main.go
