@@ -155,6 +155,44 @@ func main() {
 		verifyFileDeleted("to_be_deleted.txt")
 	})
 
+	// Case X: 本地修改优于云端旧版本 (防覆盖 Bug 验证)
+	// 场景：本地修改了文件，同时强制触发云端全量扫描（模拟首次同步或 Token 过期）。
+	// 预期：不应该用云端的旧文件覆盖本地的新文件。
+	runTest("B07: 防覆盖 - 本地新 vs 云端旧 (Full Sync)", func() {
+		// 1. 初始化：两端一致
+		createFile("protect_me.txt", "Version 1 (Base)")
+		runSync()
+		verifyCloudFile("protect_me.txt", "Version 1 (Base)")
+
+		// 2. 本地修改 (Version 2)
+		createFile("protect_me.txt", "Version 2 (Local New)")
+
+		// 3. 关键步骤：清除 DB 中的 delta_link，强制触发全量 Delta Sync。
+		// 这会让云端再次下发 "protect_me.txt" (Version 1) 的记录，
+		// 从而进入 downloadWorker 的逻辑陷阱。
+		dbPath := filepath.Join(absRoot, "driftsync.db")
+		db, err := sql.Open("sqlite", dbPath)
+		if err != nil {
+			fatal("无法打开 DB 清除 delta_link")
+		}
+		_, err = db.Exec("DELETE FROM meta WHERE key = 'delta_link'")
+		db.Close()
+		if err != nil {
+			fatal("清除 delta_link 失败")
+		}
+
+		// 4. 执行同步
+		fmt.Println("   🔄 触发全量同步 (模拟环境重置)...")
+		runSync()
+
+		// 5. 验证：本地文件必须保留 Version 2，不能被 Version 1 覆盖
+		verifyLocalFile("protect_me.txt", "Version 2 (Local New)")
+		
+		// 6. 最终一致性验证：再次同步后，云端也应该变成 Version 2 (Upload 逻辑生效)
+		runSync() 
+		verifyCloudFile("protect_me.txt", "Version 2 (Local New)")
+	})
+
 	// Case 8: 本地删除同步
 	runTest("B05: 本地删除 -> 云端删除", func() {
 		createFile("local_del.txt", "Delete me")

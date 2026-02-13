@@ -349,11 +349,12 @@ func (s *Syncer) downloadWorker(ctx context.Context, id, rel, etag, remoteSha256
 
 	// Conflict Detection Logic
 	conflict := false
-	
+	localChanged := false
+	cloudChanged := false
+
 	if localExists && dbOld != nil {
-		localChanged := localHash != dbOld.Shasum
+		localChanged = localHash != dbOld.Shasum
 		// SMART CONFLICT: Use Hash to check if cloud content actually changed
-		cloudChanged := false
 		if remoteSha256 != "" {
 			cloudChanged = (remoteSha256 != dbOld.Shasum)
 		} else {
@@ -387,6 +388,12 @@ func (s *Syncer) downloadWorker(ctx context.Context, id, rel, etag, remoteSha256
 			targetPath = makeConflictPath(lp, "cloud")
 			log.Printf("CONFLICT [Keep Both]: Downloading to %s", targetPath)
 		}
+	} else if localChanged && !cloudChanged {
+		// CRITICAL FIX: Local is newer (modified), and Cloud is old (unmodified).
+		// We must NOT overwrite local with the old cloud version.
+		// Let the subsequent 'localScanAndUpload' phase handle the upload.
+		log.Printf("[Sync] Skipping download for %s: Local file is modified and newer than cloud.", rel)
+		return nil
 	}
 
 	// Smart Sync: If ETag changed but Content matches (Cloud metadata update OR same change on both sides)
