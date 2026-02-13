@@ -193,6 +193,31 @@ func main() {
 		verifyCloudFile("protect_me.txt", "Version 2 (Local New)")
 	})
 
+	// Case X: 回显抑制 (Echo Suppression)
+	// 场景：上传文件后立即再次同步。
+	// 预期：Delta API 会返回该文件（因为它刚变过），但 syncer 应该发现本地/云端/DB一致，从而忽略下载。
+	runTest("B08: 回显抑制 - 上传后再次同步不应下载", func() {
+		createFile("echo_suppress.txt", "Echo Content")
+		
+		// 1. 首次同步 -> 上传
+		out1 := runSync()
+		if !strings.Contains(out1, "echo_suppress.txt") {
+			fatal("Setup Fail: 第一次同步未上传目标文件")
+		}
+
+		// 2. 再次同步 -> 应该静默 (绝对不应显示下载了该文件)
+		out2 := runSync()
+		
+		// 检查标准：既不能显示在 "Downloaded" 列表里，也不能把文件内容搞丢
+		// 注意：根据 printSummary 的实现，如果有下载，会包含 "Downloaded:" 和文件名
+		if strings.Contains(out2, "echo_suppress.txt") && strings.Contains(out2, "Downloaded") {
+			fatal("FAIL: 发生了回显下载！文件不应被标记为 Downloaded。")
+		}
+		
+		// 验证内容完整性
+		verifyLocalFile("echo_suppress.txt", "Echo Content")
+	})
+
 	// Case 8: 本地删除同步
 	runTest("B05: 本地删除 -> 云端删除", func() {
 		createFile("local_del.txt", "Delete me")

@@ -367,7 +367,14 @@ func (s *Syncer) downloadWorker(ctx context.Context, id, rel, etag, remoteSha256
 	} else if localExists && dbOld == nil {
 		// Local file exists but no DB record. Cloud wants to download.
 		// Assume conflict.
-		conflict = true 
+		conflict = true
+	}
+
+	// OPTIMIZATION: Echo Suppression
+	// If the file comes from Delta API (e.g. triggered by our own upload),
+	// but neither Local nor Cloud has changed relative to DB, we are already in sync.
+	if localExists && dbOld != nil && !localChanged && !cloudChanged {
+		return nil
 	}
 
 	targetPath := lp
