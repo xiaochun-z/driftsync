@@ -52,6 +52,14 @@ type DeltaResponse struct {
 	NextLink  string      `json:"@odata.nextLink"`
 }
 
+// DeltaGoneError is returned when the OneDrive delta link has expired (HTTP 410 Gone).
+// The caller must discard the stored delta link and restart from a full sync.
+type DeltaGoneError struct{}
+
+func (e *DeltaGoneError) Error() string {
+	return "OneDrive delta link expired (410 Gone); resetting to full sync"
+}
+
 func (c *Client) RootDelta(ctx context.Context, deltaLink string) (*DeltaResponse, error) {
 	var u string
 	if deltaLink != "" {
@@ -59,12 +67,19 @@ func (c *Client) RootDelta(ctx context.Context, deltaLink string) (*DeltaRespons
 	} else {
 		u = c.Base + "/me/drive/root/delta"
 	}
-	req, _ := http.NewRequestWithContext(ctx, "GET", u, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build delta request: %w", err)
+	}
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
+	// 410 Gone: delta link has expired; caller must do a full sync
+	if resp.StatusCode == 410 {
+		return nil, &DeltaGoneError{}
+	}
 	if resp.StatusCode != 200 {
 		b, _ := io.ReadAll(resp.Body)
 		return nil, fmt.Errorf("delta http %d: %s", resp.StatusCode, string(b))
@@ -97,7 +112,10 @@ func escapePathSegments(rel string) string {
 func (c *Client) GetItemByPath(ctx context.Context, relPath string) (*DriveItem, error) {
 	safe := escapePathSegments(relPath)
 	u := fmt.Sprintf("%s/me/drive/root:%s", c.Base, safe)
-	req, _ := http.NewRequestWithContext(ctx, "GET", u, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build get-item request: %w", err)
+	}
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return nil, err
@@ -117,7 +135,10 @@ func (c *Client) GetItemByPath(ctx context.Context, relPath string) (*DriveItem,
 func (c *Client) DeleteByPath(ctx context.Context, relPath string) error {
 	safe := escapePathSegments(relPath)
 	u := fmt.Sprintf("%s/me/drive/root:%s:", c.Base, safe)
-	req, _ := http.NewRequestWithContext(ctx, "DELETE", u, nil)
+	req, err := http.NewRequestWithContext(ctx, "DELETE", u, nil)
+	if err != nil {
+		return fmt.Errorf("build delete request: %w", err)
+	}
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return err
@@ -132,7 +153,10 @@ func (c *Client) DeleteByPath(ctx context.Context, relPath string) error {
 
 func (c *Client) DownloadTo(ctx context.Context, itemID, destPath string) error {
 	u := fmt.Sprintf("%s/me/drive/items/%s", c.Base, url.PathEscape(itemID))
-	req, _ := http.NewRequestWithContext(ctx, "GET", u, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
+	if err != nil {
+		return fmt.Errorf("build item-meta request: %w", err)
+	}
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
 		return err
@@ -151,8 +175,12 @@ func (c *Client) DownloadTo(ctx context.Context, itemID, destPath string) error 
 		return fmt.Errorf("no @microsoft.graph.downloadUrl on item %s", itemID)
 	}
 
-	plain := &http.Client{Timeout: 0} // FIX: Disable timeout for large file downloads; rely on ctx cancel or keep-alives
-	req2, _ := http.NewRequestWithContext(ctx, "GET", dl, nil)
+	// Disable timeout for large file downloads; rely on ctx cancellation instead.
+	plain := &http.Client{Timeout: 0}
+	req2, err := http.NewRequestWithContext(ctx, "GET", dl, nil)
+	if err != nil {
+		return fmt.Errorf("build download request: %w", err)
+	}
 	resp2, err := plain.Do(req2)
 	if err != nil {
 		return err
@@ -166,13 +194,13 @@ func (c *Client) DownloadTo(ctx context.Context, itemID, destPath string) error 
 		return err
 	}
 
-	// FIX: Atomic write. Download to .tmp first, then rename.
+	// Atomic write: download to .tmp first, then rename.
 	tmpPath := destPath + ".tmp"
 	f, err := os.Create(tmpPath)
 	if err != nil {
 		return err
 	}
-	// Ensure temp file is cleaned up if we return early
+	// Ensure temp file is cleaned up on any error path.
 	defer func() {
 		f.Close()
 		if err != nil {
@@ -180,18 +208,21 @@ func (c *Client) DownloadTo(ctx context.Context, itemID, destPath string) error 
 		}
 	}()
 
-	if _, err = io.Copy(f, resp2.Body); err != nil {
+	written, err := io.Copy(f, resp2.Body)
+	if err != nil {
 		return err
 	}
-	// Close explicitly to ensure flush
+	// Detect truncated downloads: if the server advertised Content-Length, verify it.
+	if cl := resp2.ContentLength; cl > 0 && written != cl {
+		err = fmt.Errorf("download truncated for item %s: received %d of %d bytes", itemID, written, cl)
+		return err
+	}
+	// Close explicitly before rename to ensure all bytes are flushed.
 	if err = f.Close(); err != nil {
 		return err
 	}
 
-	// Atomic rename
-	// FIX: Windows does not allow renaming if the destination exists.
-	// We must remove the destination explicitly.
-	// Robustness: Retry logic for Windows file locking issues (AV scanners, indexers).
+	// Atomic rename; retries handle Windows file-locking from AV scanners.
 	return renameWithRetry(tmpPath, destPath)
 }
 
@@ -201,7 +232,7 @@ func renameWithRetry(src, dest string) error {
 		return nil
 	}
 
-	// 2. Windows-safe strategy: Rename Dest -> Backup, Src -> Dest, Delete Backup
+	// 2. Windows-safe strategy: Rename Dest -> Backup, Src -> Dest, Delete Backup.
 	// This prevents data loss if the final rename fails.
 	bak := dest + ".old.tmp"
 	_ = os.Remove(bak) // cleanup potential leftover
@@ -211,7 +242,7 @@ func renameWithRetry(src, dest string) error {
 		// Attempt to move existing file out of the way
 		if err := os.Rename(dest, bak); err != nil {
 			if os.IsNotExist(err) {
-				// Dest disappeared? Just try moving src -> dest again
+				// Dest disappeared; try moving src -> dest again
 				if err := os.Rename(src, dest); err == nil {
 					return nil
 				}
@@ -223,19 +254,17 @@ func renameWithRetry(src, dest string) error {
 
 		// Move new file to dest
 		if err := os.Rename(src, dest); err != nil {
-			// CRITICAL: Rollback! Try to move backup back to dest
+			// CRITICAL: Rollback! Try to restore the backup.
 			if rbErr := os.Rename(bak, dest); rbErr != nil {
-				// DISASTER: Rollback failed. The user's original file is at 'bak'.
-				// Log this strictly so the user can recover manually.
-				lastErr = fmt.Errorf("replace failed AND rollback failed! Your original file is saved at '%s'. Error: %v | RollbackErr: %v", bak, err, rbErr)
+				// Rollback failed. Original file is at 'bak' — user must recover manually.
+				lastErr = fmt.Errorf("replace failed AND rollback failed; original file saved at %q — Error: %v | RollbackErr: %v", bak, err, rbErr)
 			} else {
-				lastErr = fmt.Errorf("replace dest failed (successfully rolled back): %w", err)
+				lastErr = fmt.Errorf("replace dest failed (rollback succeeded): %w", err)
 			}
 			time.Sleep(500 * time.Millisecond)
 			continue
 		}
 
-		// Success! Cleanup backup
 		_ = os.Remove(bak)
 		return nil
 	}
@@ -263,7 +292,7 @@ func (c *Client) UploadSmall(ctx context.Context, relPath, localPath, ifMatch st
 		req, err := http.NewRequestWithContext(ctx, "PUT", u, f)
 		if err != nil {
 			f.Close()
-			return nil, err // Fatal error building request
+			return nil, err // Fatal: URL construction failed
 		}
 		req.Header.Set("Content-Type", "application/octet-stream")
 		if ifMatch != "" {
@@ -326,6 +355,7 @@ func (c *Client) UploadLarge(ctx context.Context, relPath, localPath, ifMatch st
 
 	stat, err := os.Stat(localPath)
 	if err != nil {
+		c.cancelUploadSession(sessURL)
 		return nil, err
 	}
 	size := stat.Size()
@@ -333,7 +363,6 @@ func (c *Client) UploadLarge(ctx context.Context, relPath, localPath, ifMatch st
 	// Graph API requires fragment size to be a multiple of 320 KiB (327,680 bytes).
 	const graphFragmentSize = 327680
 	rawChunk := int64(chunkMB) * 1024 * 1024
-	// Round down to the nearest multiple of graphFragmentSize
 	chunk := (rawChunk / graphFragmentSize) * graphFragmentSize
 	if chunk == 0 {
 		chunk = graphFragmentSize
@@ -360,54 +389,66 @@ func (c *Client) UploadLarge(ctx context.Context, relPath, localPath, ifMatch st
 	worker := func() {
 		defer wg.Done()
 		for p := range jobs {
-			f, err := os.Open(localPath)
-			if err != nil {
-				resc <- result{Err: err}
+			f, openErr := os.Open(localPath)
+			if openErr != nil {
+				resc <- result{Err: openErr}
 				continue
 			}
-			var resp *http.Response
+
+			// chunkErr tracks the outcome of this chunk's attempt; kept separate from
+			// inner-scope :=-declared variables to avoid shadowing bugs.
+			var (
+				resp     *http.Response
+				chunkErr error
+			)
 			for attempt := 0; attempt < 5; attempt++ {
-				// FIX: Seek and recreate request body inside loop to ensure retries carry data
-				if _, err := f.Seek(p.Start, io.SeekStart); err != nil {
-					err = fmt.Errorf("seek error: %w", err)
+				if _, seekErr := f.Seek(p.Start, io.SeekStart); seekErr != nil {
+					chunkErr = fmt.Errorf("seek to byte %d: %w", p.Start, seekErr)
 					break
 				}
 				lim := io.LimitReader(f, p.End-p.Start+1)
 
-				req, err := http.NewRequestWithContext(ctx, "PUT", sessURL, lim)
-				if err != nil {
-					break // Fatal error constructing request
+				req, reqErr := http.NewRequestWithContext(ctx, "PUT", sessURL, lim)
+				if reqErr != nil {
+					chunkErr = reqErr
+					break // Fatal: URL or context invalid
 				}
 				req.Header.Set("Content-Length", strconv.FormatInt(p.End-p.Start+1, 10))
 				req.Header.Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", p.Start, p.End, size))
 
-				resp, err = c.HTTP.Do(req)
-				if err == nil && (resp.StatusCode == 200 || resp.StatusCode == 201 || resp.StatusCode == 202) {
+				resp, chunkErr = c.HTTP.Do(req)
+				if chunkErr == nil && (resp.StatusCode == 200 || resp.StatusCode == 201 || resp.StatusCode == 202) {
 					break
 				}
 
-				// Retry on network error OR server error (429/5xx)
-				shouldRetry := err != nil
+				// Retry on network error or server-side transient failure
+				shouldRetry := chunkErr != nil
 				if !shouldRetry && resp != nil && (resp.StatusCode == 429 || resp.StatusCode >= 500) {
 					shouldRetry = true
 				}
-
 				if shouldRetry {
-					// Clean up before retry
 					if resp != nil {
 						io.Copy(io.Discard, resp.Body)
 						resp.Body.Close()
+						resp = nil
 					}
 					time.Sleep(time.Duration(1<<attempt) * 200 * time.Millisecond)
 					continue
 				}
 				break
 			}
-			if err != nil {
+
+			if chunkErr != nil {
 				f.Close()
-				resc <- result{Err: err}
+				resc <- result{Err: chunkErr}
 				continue
 			}
+			if resp == nil {
+				f.Close()
+				resc <- result{Err: fmt.Errorf("upload chunk: no response after retries")}
+				continue
+			}
+
 			body, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
 			f.Close()
@@ -415,18 +456,16 @@ func (c *Client) UploadLarge(ctx context.Context, relPath, localPath, ifMatch st
 			if resp.StatusCode == 200 || resp.StatusCode == 201 {
 				var it DriveItem
 				if err := json.Unmarshal(body, &it); err == nil && it.ID != "" {
-					resc <- result{Item: &it, Err: nil}
+					resc <- result{Item: &it}
 					continue
 				}
 			}
-			// 202 Accepted is returned for intermediate chunks, which is a success.
+			// 202 Accepted is expected for all intermediate chunks.
 			if resp.StatusCode == 202 {
-				resc <- result{Item: nil, Err: nil}
+				resc <- result{}
 				continue
 			}
-
-			// Return actual error if upload failed (e.g. 400, 401, 403)
-			resc <- result{Item: nil, Err: fmt.Errorf("upload chunk http %d: %s", resp.StatusCode, string(body))}
+			resc <- result{Err: fmt.Errorf("upload chunk http %d: %s", resp.StatusCode, string(body))}
 		}
 	}
 
@@ -444,6 +483,8 @@ func (c *Client) UploadLarge(ctx context.Context, relPath, localPath, ifMatch st
 	var lastItem *DriveItem
 	for r := range resc {
 		if r.Err != nil {
+			// Cancel the upload session so OneDrive doesn't hold quota for an orphaned session.
+			go c.cancelUploadSession(sessURL)
 			return nil, r.Err
 		}
 		if r.Item != nil {
@@ -460,10 +501,28 @@ func (c *Client) UploadLarge(ctx context.Context, relPath, localPath, ifMatch st
 	return lastItem, nil
 }
 
+// cancelUploadSession sends a DELETE to the session URL to free OneDrive quota
+// for orphaned upload sessions. Called asynchronously on fatal upload failure.
+func (c *Client) cancelUploadSession(sessURL string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, "DELETE", sessURL, nil)
+	if err != nil {
+		return
+	}
+	if resp, err := c.HTTP.Do(req); err == nil {
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}
+}
+
 func (c *Client) createUploadSession(ctx context.Context, safePath, ifMatch string) (string, error) {
 	u := fmt.Sprintf("%s/me/drive/root:%s:/createUploadSession", c.Base, safePath)
 	body := strings.NewReader(`{"item":{"@microsoft.graph.conflictBehavior":"replace"}}`)
-	req, _ := http.NewRequestWithContext(ctx, "POST", u, body)
+	req, err := http.NewRequestWithContext(ctx, "POST", u, body)
+	if err != nil {
+		return "", fmt.Errorf("build createUploadSession request: %w", err)
+	}
 	req.Header.Set("Content-Type", "application/json")
 	if ifMatch != "" {
 		req.Header.Set("If-Match", ifMatch)

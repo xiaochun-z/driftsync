@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"syscall"
 
 	"github.com/xiaochun-z/driftsync/internal/auth"
 	"github.com/xiaochun-z/driftsync/internal/config"
@@ -16,38 +18,22 @@ import (
 )
 
 // version is the application version.
-// It can optionally be overridden at build time via:
-//
-//	go build -ldflags="-X main.version=..."
-//
-// If not overridden, this static value is used.
+// Override at build time via: go build -ldflags="-X main.version=v1.2.3"
 var version = "dev"
 
-// printUsage prints a help message that includes the version, usage, and flags.
-// It is wired into flag.Usage and used for -h/--help as well as parse errors.
 func printUsage() {
 	exe := filepath.Base(os.Args[0])
 	out := flag.CommandLine.Output()
-
-	// Header: name + version
 	fmt.Fprintf(out, "%s %s\n\n", exe, version)
-
-	// Basic usage line
 	fmt.Fprintf(out, "Usage:\n  %s [flags]\n\n", exe)
-
-	// Optional short description
 	fmt.Fprintln(out, "driftsync synchronizes a local folder with a cloud drive using delta API and a local SQLite database.")
-
-	// List all flags
 	fmt.Fprintln(out, "Flags:")
 	flag.PrintDefaults()
 }
 
 func main() {
-	// Install custom Usage printer before defining/using flags.
 	flag.Usage = printUsage
 
-	// Flags
 	cfgPathFlag := flag.String("config", "", "Path to configuration YAML (optional)")
 	interactiveFlag := flag.Bool("interactive", false, "Enable interactive conflict resolution")
 	flag.BoolVar(interactiveFlag, "i", false, "Alias for -interactive")
@@ -55,11 +41,8 @@ func main() {
 
 	flag.Parse()
 
-	// Handle --version / -version early, before touching config or networking.
 	if *versionFlag {
-		out := flag.CommandLine.Output()
-		exe := filepath.Base(os.Args[0])
-		fmt.Fprintf(out, "%s %s\n", exe, version)
+		fmt.Fprintf(flag.CommandLine.Output(), "%s %s\n", filepath.Base(os.Args[0]), version)
 		return
 	}
 
@@ -68,26 +51,32 @@ func main() {
 		cfgPath = "config.yaml"
 	}
 
-	// Verify config file existence
+	// Provide an actionable hint if the config file is missing.
 	if _, err := os.Stat(cfgPath); os.IsNotExist(err) {
-		log.Fatalf("Config file not found: %s", cfgPath)
+		hint := ""
+		sample := filepath.Join(filepath.Dir(cfgPath), "config.sample.yaml")
+		if _, serr := os.Stat(sample); serr == nil {
+			hint = fmt.Sprintf("\n  Hint: cp %s %s  (then edit it)", sample, cfgPath)
+		}
+		log.Fatalf("Config file not found: %s%s", cfgPath, hint)
 	}
 
-	// Load configuration
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
 		log.Fatalf("Failed to load config %s: %v", cfgPath, err)
 	}
-	// CLI flag overrides config
 	if *interactiveFlag {
 		cfg.Interactive = true
 	}
-
 	if err := cfg.Validate(); err != nil {
 		log.Fatalf("Config invalid: %v", err)
 	}
 
-	// Database in same directory as config.yaml
+	// Cancellable context: Ctrl+C or SIGTERM trigger graceful shutdown.
+	// In-flight downloads/uploads respect ctx and will stop cleanly.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	dbPath := filepath.Join(filepath.Dir(cfgPath), "driftsync.db")
 	db, err := store.Open(dbPath)
 	if err != nil {
@@ -98,20 +87,22 @@ func main() {
 	tokStore := store.NewTokenStore(db)
 	authClient := auth.NewDeviceCodeClient(cfg.Tenant, cfg.ClientID, tokStore)
 
-	ctx := context.Background()
 	httpClient := authClient.AuthorizedClient(ctx)
 	g := graph.NewClient(httpClient)
 
 	if err := authClient.EnsureLogin(ctx); err != nil {
-		log.Printf("login failed: %v", err)
-		return
+		log.Fatalf("login failed: %v", err)
 	}
 
 	s := syncer.NewSyncer(cfg, db, g)
 
 	if err := s.SyncOnce(ctx); err != nil {
-		log.Printf("sync error: %v", err)
-		return
+		if ctx.Err() != nil {
+			log.Printf("Sync interrupted by user.")
+		} else {
+			log.Printf("sync error: %v", err)
+		}
+		os.Exit(1)
 	}
 
 	log.Printf("Sync completed. Database stored at: %s", dbPath)

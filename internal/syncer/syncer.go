@@ -3,6 +3,7 @@ package syncer
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -19,7 +20,6 @@ import (
 	"github.com/xiaochun-z/driftsync/internal/ui"
 )
 
-// dlTask is defined at package level to ensure type consistency
 type dlTask struct {
 	ID      string
 	PathRel string
@@ -39,7 +39,7 @@ type Syncer struct {
 	filter     *selective.List
 	recently   map[string]int64
 	mu         sync.Mutex
-	dbMu       sync.Mutex // Serializes DB writes
+	dbMu       sync.Mutex
 	uploaded   []string
 	downloaded []string
 	deleted    []string
@@ -60,15 +60,12 @@ func NewSyncer(cfg *config.Config, db *sql.DB, g *graph.Client) *Syncer {
 		}
 	}
 	return &Syncer{
-		cfg:        cfg,
-		db:         db,
-		g:          g,
-		filter:     f,
-		lastLocal:  map[string]scan.Entry{},
-		recently:   map[string]int64{},
-		uploaded:   []string{},
-		downloaded: []string{},
-		deleted:    []string{},
+		cfg:       cfg,
+		db:        db,
+		g:         g,
+		filter:    f,
+		lastLocal: map[string]scan.Entry{},
+		recently:  map[string]int64{},
 	}
 }
 
@@ -81,13 +78,13 @@ func (s *Syncer) SyncOnce(ctx context.Context) error {
 		return fmt.Errorf("create local root error: %w", err)
 	}
 
-	// 1. Local Deletes First: Propagate local deletions to cloud.
-	// This prevents the cloud from "saving" deleted local files by re-downloading them.
+	// 1. Local Deletes First: propagate local deletions to cloud before downloading,
+	// so the cloud cannot "save" a locally-deleted file by re-downloading it.
 	if err := s.localDetectAndDeleteCloud(ctx); err != nil {
 		log.Printf("local->cloud delete err: %v", err)
 	}
 
-	// 2. Cloud Updates: Check for updates/deletes from cloud.
+	// 2. Cloud Updates: check for new/changed/deleted items from cloud.
 	if s.cfg.DownloadFromCloud {
 		if s.deltaLink == "" {
 			val, err := store.GetMeta(ctx, s.db, "delta_link")
@@ -100,7 +97,7 @@ func (s *Syncer) SyncOnce(ctx context.Context) error {
 		}
 	}
 
-	// 3. Local Uploads: Upload new/modified local files.
+	// 3. Local Uploads: push new/modified local files to cloud.
 	if s.cfg.UploadFromLocal {
 		if err := s.localScanAndUpload(ctx); err != nil {
 			log.Printf("local upload err: %v", err)
@@ -112,61 +109,68 @@ func (s *Syncer) SyncOnce(ctx context.Context) error {
 	return nil
 }
 
-// cloudDelta handles incoming changes from the cloud.
+// cloudDelta handles incoming changes from the cloud via the Delta API.
 func (s *Syncer) cloudDelta(ctx context.Context) error {
 	isIncremental := s.deltaLink != ""
 
 	var toDownload []dlTask
 	cloudAlive := map[string]struct{}{}
 
-	// Paging loop for Delta API
+	// Paging loop for Delta API. On 410 Gone, reset and retry as a full sync (once).
+	retried := false
 	for {
 		d, err := s.g.RootDelta(ctx, s.deltaLink)
 		if err != nil {
+			// 410 Gone: delta link expired. Reset state and perform a full sync.
+			var gone *graph.DeltaGoneError
+			if errors.As(err, &gone) && !retried {
+				log.Printf("[WARN] %v. Discarding stored delta link.", err)
+				retried = true
+				s.deltaLink = ""
+				s.saveDeltaLink(ctx, "")
+				isIncremental = false
+				toDownload = toDownload[:0]
+				cloudAlive = map[string]struct{}{}
+				continue
+			}
 			return err
 		}
 		for _, it := range d.Value {
 			// === HANDLE CLOUD DELETION ===
-			// Process deletion BEFORE path check, because deleted items often lack Name/Parent,
-			// causing itemPathRel to be empty. We must recover the path from DB via ID.
+			// Process deletions before the path check: deleted items often lack
+			// Name/ParentReference, so itemPathRel would return empty. Recover the
+			// path from the local DB instead.
 			if it.Deleted != nil {
 				dbOld, _ := store.GetByID(ctx, s.db, it.ID)
-				
+
 				var pathRel string
 				if dbOld != nil {
-					// Trust DB path
 					pathRel = dbOld.PathRel
 				} else {
-					// Fallback to cloud path (likely empty, but try anyway)
 					pathRel = s.itemPathRel(it)
 				}
 
-				// If we still don't have a path, we can't delete anything.
 				if pathRel == "" || pathRel == "." || pathRel == "/" {
 					continue
 				}
 
 				localPath := filepath.Join(s.cfg.LocalPath, filepath.FromSlash(pathRel))
 
-				// SAFETY CHECK: Verify if local file matches DB before deleting.
 				shouldDelete := true
 				if _, err := os.Stat(localPath); err == nil {
-					// File exists locally. Check if it's dirty.
 					localHash, _ := scan.HashFile(localPath)
 
 					isDirty := false
 					if dbOld == nil {
-						// Cloud says delete, but we have a local file not in DB?
-						// It's a new local file. Don't delete.
+						// Cloud says delete but we have an untracked local file; keep it.
 						isDirty = true
 					} else if localHash != dbOld.Shasum {
-						// Content changed locally since last sync.
+						// Content changed locally since last sync; keep it.
 						isDirty = true
 					}
 
 					if isDirty {
-						log.Printf("[SAFETY] Skipping cloud deletion for %s: Local file has modifications.", pathRel)
-						// Remove DB entry so it's treated as a new local file next time
+						log.Printf("[SAFETY] Skipping cloud deletion for %s: local file has modifications.", pathRel)
 						shouldDelete = false
 						s.dbMu.Lock()
 						_ = store.DeleteByPath(ctx, s.db, pathRel)
@@ -175,13 +179,11 @@ func (s *Syncer) cloudDelta(ctx context.Context) error {
 				}
 
 				if shouldDelete {
-					// Perform Safe Delete (Move to Trash)
 					if err := s.moveToTrash(localPath); err != nil {
 						log.Printf("trash error %s: %v", pathRel, err)
 					} else {
 						s.trackChange("delete (cloud)", pathRel, 0)
 					}
-
 					s.dbMu.Lock()
 					_ = store.DeleteByPath(ctx, s.db, pathRel)
 					s.dbMu.Unlock()
@@ -191,7 +193,6 @@ func (s *Syncer) cloudDelta(ctx context.Context) error {
 
 			// === NORMAL ITEM PATH CHECK ===
 			pathRel := s.itemPathRel(it)
-			// FIX: Ignore root or empty paths to prevent weird logs/behavior
 			if pathRel == "" || pathRel == "." || pathRel == "/" {
 				continue
 			}
@@ -207,7 +208,7 @@ func (s *Syncer) cloudDelta(ctx context.Context) error {
 				continue
 			}
 
-			// === HANDLE FILES (Potential Download) ===
+			// === HANDLE FILES (potential download) ===
 			if it.File != nil {
 				if s.filter != nil && !s.filter.ShouldSync(pathRel, false) {
 					continue
@@ -239,7 +240,8 @@ func (s *Syncer) cloudDelta(ctx context.Context) error {
 		break
 	}
 
-	// === RECONCILE (Full Sync Only) ===
+	// === RECONCILE (full sync only) ===
+	// Only runs when we have a complete picture of cloud state (non-incremental).
 	if !isIncremental {
 		if err := s.reconcileMissing(ctx, cloudAlive); err != nil {
 			log.Printf("reconcile error: %v", err)
@@ -249,9 +251,6 @@ func (s *Syncer) cloudDelta(ctx context.Context) error {
 	if len(toDownload) == 0 {
 		return nil
 	}
-
-	// === PROCESS DOWNLOADS ===
-	// Pass concrete slice, no interface{} conversion
 	return s.processDownloads(ctx, toDownload)
 }
 
@@ -261,28 +260,29 @@ func (s *Syncer) reconcileMissing(ctx context.Context, cloudAlive map[string]str
 		return err
 	}
 	for _, p := range dbPaths {
-		if p == "" || p == "." { continue }
+		if p == "" || p == "." {
+			continue
+		}
 		if s.filter != nil && !s.filter.ShouldSync(p, false) {
 			continue
 		}
 		if _, ok := cloudAlive[p]; !ok {
-			// File is in DB but not in Cloud Scan -> Cloud Deleted it.
+			// File is in DB but absent from cloud scan → cloud deleted it.
 			lp := filepath.Join(s.cfg.LocalPath, filepath.FromSlash(p))
-			
+
 			if _, statErr := os.Stat(lp); statErr == nil {
 				dbOld, _ := store.GetByPathFull(ctx, s.db, p)
 				localHash, _ := scan.HashFile(lp)
-				
-				// If local modified, keep it (Untrack from DB)
+
+				// If locally modified, keep the file and untrack it from DB.
 				if dbOld != nil && localHash != dbOld.Shasum {
-					log.Printf("[SAFETY] Reconcile: Keeping %s (modified locally)", p)
+					log.Printf("[SAFETY] Reconcile: keeping %s (modified locally)", p)
 					s.dbMu.Lock()
 					_ = store.DeleteByPath(ctx, s.db, p)
 					s.dbMu.Unlock()
 					continue
 				}
-				
-				// Safe to delete
+
 				_ = s.moveToTrash(lp)
 				s.trackChange("delete (reconcile)", p, 0)
 			}
@@ -295,26 +295,31 @@ func (s *Syncer) reconcileMissing(ctx context.Context, cloudAlive map[string]str
 	return nil
 }
 
-// processDownloads now accepts []dlTask directly, preventing interface conversion panic
+// processDownloads fans out download tasks to worker goroutines and collects errors.
 func (s *Syncer) processDownloads(ctx context.Context, dlTasks []dlTask) error {
 	workers := s.cfg.DownloadWorkers
-	if workers < 1 { workers = 8 }
-	
+	if workers < 1 {
+		workers = 8
+	}
+
 	jobs := make(chan dlTask, len(dlTasks))
-	errCh := make(chan error, workers)
-	var wg sync.WaitGroup
+	var (
+		wg    sync.WaitGroup
+		errMu sync.Mutex
+		errs  []error
+	)
 
 	for i := 0; i < workers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for t := range jobs {
 				if err := s.downloadWorker(ctx, t.ID, t.PathRel, t.ETag, t.Sha256, t.Size); err != nil {
-					log.Printf("download worker error: %v", err)
+					log.Printf("download error [%s]: %v", t.PathRel, err)
+					errMu.Lock()
+					errs = append(errs, err)
+					errMu.Unlock()
 				}
 			}
-			errCh <- nil
-		}()
+		})
 	}
 
 	for _, t := range dlTasks {
@@ -322,7 +327,10 @@ func (s *Syncer) processDownloads(ctx context.Context, dlTasks []dlTask) error {
 	}
 	close(jobs)
 	wg.Wait()
-	close(errCh)
+
+	if len(errs) > 0 {
+		return fmt.Errorf("%d file(s) failed to download; last error: %w", len(errs), errs[len(errs)-1])
+	}
 	return nil
 }
 
@@ -333,13 +341,13 @@ func (s *Syncer) downloadWorker(ctx context.Context, id, rel, etag, remoteSha256
 	}
 
 	dbOld, _ := store.GetByPathFull(ctx, s.db, rel)
-	
-	// Check Local State
+
+	// Determine local state
 	localHash := ""
 	localExists := false
 	if info, err := os.Stat(lp); err == nil {
 		localExists = true
-		// Optimization: If meta matches DB, assume hash matches DB
+		// Optimization: trust DB hash when size+mtime match, avoiding a full re-hash.
 		if dbOld != nil && info.ModTime().Unix() == dbOld.Mtime && info.Size() == dbOld.Size {
 			localHash = dbOld.Shasum
 		} else {
@@ -347,32 +355,27 @@ func (s *Syncer) downloadWorker(ctx context.Context, id, rel, etag, remoteSha256
 		}
 	}
 
-	// Conflict Detection Logic
+	// Conflict detection
 	conflict := false
 	localChanged := false
 	cloudChanged := false
 
 	if localExists && dbOld != nil {
 		localChanged = localHash != dbOld.Shasum
-		// SMART CONFLICT: Use Hash to check if cloud content actually changed
 		if remoteSha256 != "" {
-			cloudChanged = (remoteSha256 != dbOld.Shasum)
+			cloudChanged = remoteSha256 != dbOld.Shasum
 		} else {
-			cloudChanged = (etag != dbOld.ETag)
+			cloudChanged = etag != dbOld.ETag
 		}
-
 		if localChanged && cloudChanged {
 			conflict = true
 		}
 	} else if localExists && dbOld == nil {
-		// Local file exists but no DB record. Cloud wants to download.
-		// Assume conflict.
+		// Local file exists but no DB record; cloud wants to overwrite → conflict.
 		conflict = true
 	}
 
-	// OPTIMIZATION: Echo Suppression
-	// If the file comes from Delta API (e.g. triggered by our own upload),
-	// but neither Local nor Cloud has changed relative to DB, we are already in sync.
+	// Echo suppression: if neither side changed relative to DB, we are already in sync.
 	if localExists && dbOld != nil && !localChanged && !cloudChanged {
 		return nil
 	}
@@ -383,50 +386,52 @@ func (s *Syncer) downloadWorker(ctx context.Context, id, rel, etag, remoteSha256
 		if s.cfg.Interactive {
 			choice = ui.ResolveConflict(s.loader, rel, "Download")
 		}
-
 		switch choice {
 		case ui.UseLocal:
-			log.Printf("CONFLICT [Keep Local]: Skipping download for %s", rel)
+			log.Printf("CONFLICT [Keep Local]: skipping download for %s", rel)
 			return nil
 		case ui.UseCloud:
-			log.Printf("CONFLICT [Overwrite]: Downloading cloud version to %s", rel)
-			// targetPath = lp
+			log.Printf("CONFLICT [Overwrite]: downloading cloud version to %s", rel)
 		case ui.KeepBoth:
 			targetPath = makeConflictPath(lp, "cloud")
-			log.Printf("CONFLICT [Keep Both]: Downloading to %s", targetPath)
+			log.Printf("CONFLICT [Keep Both]: downloading to %s", targetPath)
 		}
 	} else if localChanged && !cloudChanged {
-		// CRITICAL FIX: Local is newer (modified), and Cloud is old (unmodified).
-		// We must NOT overwrite local with the old cloud version.
-		// Let the subsequent 'localScanAndUpload' phase handle the upload.
-		log.Printf("[Sync] Skipping download for %s: Local file is modified and newer than cloud.", rel)
+		// Local is newer; skip download and let localScanAndUpload handle it.
+		log.Printf("[Sync] Skipping download for %s: local file is newer.", rel)
 		return nil
 	}
 
-	// Smart Sync: If ETag changed but Content matches (Cloud metadata update OR same change on both sides)
-	// We handle this BEFORE downloading to prevent unnecessary conflict files.
+	// Smart sync: if content already matches (e.g. metadata-only cloud update), update DB only.
 	if localExists && remoteSha256 != "" && localHash == remoteSha256 {
-		log.Printf("[SMART] Metadata update only (content match): %s", rel)
+		log.Printf("[SMART] Content match (metadata-only update): %s", rel)
 		s.dbMu.Lock()
 		_ = store.UpsertItem(ctx, s.db, store.Item{
-			ID: id, PathRel: rel, ETag: etag, Size: size, Mtime: 0, // Mtime 0 keeps original if possible, or use current
+			ID: id, PathRel: rel, ETag: etag, Size: size,
 			Shasum: localHash, LastSrc: "cloud", LastSync: time.Now().Unix(),
 		})
 		s.dbMu.Unlock()
 		return nil
 	}
 
-	// Perform Download
+	// Perform download
 	if err := s.g.DownloadTo(ctx, id, targetPath); err != nil {
 		return err
 	}
 
-	// Post-Download: Update DB if we updated the canonical file
-	newHash, _ := scan.HashFile(targetPath)
+	// Post-download integrity check: verify SHA-256 against cloud-provided hash.
+	// A mismatch indicates network corruption or a truncated transfer.
+	newHash, hashErr := scan.HashFile(targetPath)
+	if hashErr == nil && remoteSha256 != "" && newHash != remoteSha256 {
+		os.Remove(targetPath)
+		return fmt.Errorf("integrity check failed for %s: sha256 mismatch (want %.8s…, got %.8s…)", rel, remoteSha256, newHash)
+	}
+
+	// Update DB only when writing to the canonical path (not a conflict copy).
 	if targetPath == lp {
 		s.dbMu.Lock()
 		_ = store.UpsertItem(ctx, s.db, store.Item{
-			ID: id, PathRel: rel, ETag: etag, Size: size, Mtime: 0,
+			ID: id, PathRel: rel, ETag: etag, Size: size,
 			Shasum: newHash, LastSrc: "cloud", LastSync: time.Now().Unix(),
 		})
 		s.dbMu.Unlock()
@@ -437,12 +442,13 @@ func (s *Syncer) downloadWorker(ctx context.Context, id, rel, etag, remoteSha256
 	return nil
 }
 
+// moveToTrash moves path into .driftsync_trash/ with a timestamped name that
+// encodes the original relative path, preventing collisions and aiding recovery.
 func (s *Syncer) moveToTrash(path string) error {
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		return nil
 	}
-
-	// Double check we are not deleting the trash folder itself (paranoia check)
+	// Paranoia: never operate inside the trash folder itself.
 	if strings.Contains(path, ".driftsync_trash") {
 		return nil
 	}
@@ -452,10 +458,16 @@ func (s *Syncer) moveToTrash(path string) error {
 		return err
 	}
 
-	base := filepath.Base(path)
-	ts := time.Now().Format("20060102-150405")
-	dest := filepath.Join(trashDir, fmt.Sprintf("%s.%s.deleted", base, ts))
-
+	// Encode the original relative path into the trash filename so users can
+	// identify and restore files. Millisecond precision avoids collisions when
+	// multiple files share the same basename.
+	rel, err := filepath.Rel(s.cfg.LocalPath, path)
+	if err != nil {
+		rel = filepath.Base(path)
+	}
+	safeName := strings.NewReplacer("/", "_", "\\", "_", ":", "_").Replace(filepath.ToSlash(rel))
+	ts := time.Now().Format("20060102-150405.000")
+	dest := filepath.Join(trashDir, fmt.Sprintf("%s.%s.deleted", safeName, ts))
 	return os.Rename(path, dest)
 }
 
@@ -472,16 +484,23 @@ func (s *Syncer) localDetectAndDeleteCloud(ctx context.Context) error {
 	}
 
 	rows, err := s.db.QueryContext(ctx, `SELECT path_rel FROM items`)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	defer rows.Close()
 
 	var toDelete []string
 	for rows.Next() {
 		var p string
-		if err := rows.Scan(&p); err != nil { return err }
-		if p == "" || p == "." { continue }
-		if s.filter != nil && !s.filter.ShouldSync(p, false) { continue }
-
+		if err := rows.Scan(&p); err != nil {
+			return err
+		}
+		if p == "" || p == "." {
+			continue
+		}
+		if s.filter != nil && !s.filter.ShouldSync(p, false) {
+			continue
+		}
 		if _, exists := cur[p]; !exists {
 			toDelete = append(toDelete, p)
 		}
@@ -490,12 +509,12 @@ func (s *Syncer) localDetectAndDeleteCloud(ctx context.Context) error {
 	for _, rel := range toDelete {
 		lp := filepath.Join(s.cfg.LocalPath, filepath.FromSlash(rel))
 
-		// SAFETY DOUBLE-CHECK
+		// Safety double-check: abort if the file appeared between scan and now.
 		if _, err := os.Stat(lp); err == nil {
-			log.Printf("[SAFETY] Aborting cloud delete for %s: File exists locally.", rel)
+			log.Printf("[SAFETY] Aborting cloud delete for %s: file exists locally.", rel)
 			continue
 		} else if !os.IsNotExist(err) {
-			log.Printf("[SAFETY] Aborting cloud delete for %s: FS Error %v", rel, err)
+			log.Printf("[SAFETY] Aborting cloud delete for %s: FS error %v", rel, err)
 			continue
 		}
 
@@ -514,54 +533,65 @@ func (s *Syncer) localDetectAndDeleteCloud(ctx context.Context) error {
 
 func (s *Syncer) localScanAndUpload(ctx context.Context) error {
 	en, err := scan.ScanDir(s.cfg.LocalPath)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 
 	workers := s.cfg.UploadWorkers
-	if workers < 1 { workers = 4 }
+	if workers < 1 {
+		workers = 4
+	}
 
-	type upTask struct { E scan.Entry }
+	type upTask struct{ E scan.Entry }
 	jobs := make(chan upTask, workers*2)
-	errCh := make(chan error, workers)
 	var wg sync.WaitGroup
 
 	for i := 0; i < workers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for t := range jobs {
 				if err := s.uploadWorker(ctx, t.E); err != nil {
 					log.Printf("upload error %s: %v", t.E.PathRel, err)
 				}
 			}
-			errCh <- nil
-		}()
+		})
 	}
 
 	for _, e := range en {
-		if e.IsDir { continue }
-		if e.PathRel == "" || e.PathRel == "." { continue }
-		if s.filter != nil && !s.filter.ShouldSync(e.PathRel, false) { continue }
-		if isInternalConflictFile(e.PathRel) { continue }
-		if s.isRecent(e.PathRel) { continue }
-		
+		if e.IsDir {
+			continue
+		}
+		if e.PathRel == "" || e.PathRel == "." {
+			continue
+		}
+		if s.filter != nil && !s.filter.ShouldSync(e.PathRel, false) {
+			continue
+		}
+		if isInternalConflictFile(e.PathRel) {
+			continue
+		}
+		if s.isRecent(e.PathRel) {
+			continue
+		}
+
 		s.trackChecked(e.PathRel)
-		
+
 		prev, ok := s.lastLocal[e.PathRel]
 		if ok && e.Mtime == prev.Mtime && e.Size == prev.Size {
 			continue
 		}
-		
+
 		jobs <- upTask{E: e}
 	}
-	
+
 	close(jobs)
 	wg.Wait()
-	close(errCh)
-	
+
 	newMap := map[string]scan.Entry{}
-	for _, e := range en { newMap[e.PathRel] = e }
+	for _, e := range en {
+		newMap[e.PathRel] = e
+	}
 	s.lastLocal = newMap
-	
+
 	return nil
 }
 
@@ -571,9 +601,9 @@ func (s *Syncer) uploadWorker(ctx context.Context, e scan.Entry) error {
 
 	h, _ := scan.HashFile(lp)
 	etagToUse := ""
-	
+
 	dbOld, _ := store.GetByPathFull(ctx, s.db, e.PathRel)
-	
+
 	if dbOld != nil {
 		if h == dbOld.Shasum {
 			return nil
@@ -603,14 +633,14 @@ func (s *Syncer) uploadWorker(ctx context.Context, e scan.Entry) error {
 			_ = store.DeleteByPath(ctx, s.db, e.PathRel)
 			s.dbMu.Unlock()
 			return nil
-			
+
 		case ui.UseLocal:
 			log.Printf("CONFLICT [Force Overwrite Cloud]: %s", e.PathRel)
-			it, err = doUpload(rel, "*") 
-			
+			it, err = doUpload(rel, "*")
+
 		case ui.KeepBoth:
 			conflictPath := "/" + makeConflictName(e.PathRel, "local")
-			log.Printf("CONFLICT [Keep Both]: Uploading as %s", conflictPath)
+			log.Printf("CONFLICT [Keep Both]: uploading as %s", conflictPath)
 			it, err = doUpload(conflictPath, "")
 		}
 	}
@@ -625,7 +655,7 @@ func (s *Syncer) uploadWorker(ctx context.Context, e scan.Entry) error {
 		Shasum: h, LastSrc: "local", LastSync: time.Now().Unix(),
 	})
 	s.dbMu.Unlock()
-	
+
 	s.setRecently(e.PathRel, 60*time.Second)
 	s.trackChange("upload", e.PathRel, e.Size)
 	return nil
@@ -664,7 +694,9 @@ func isInternalConflictFile(pathRel string) bool {
 }
 
 func (s *Syncer) logChange(action, rel string, size int64) {
-	if s.cfg.Log == nil || !s.cfg.Log.Verbose { return }
+	if s.cfg.Log == nil || !s.cfg.Log.Verbose {
+		return
+	}
 	log.Printf("[%s] %s (%d bytes)", strings.ToUpper(action), rel, size)
 }
 
@@ -689,18 +721,14 @@ func (s *Syncer) trackChecked(rel string) {
 
 func (s *Syncer) printSummary() {
 	s.mu.Lock()
-	// Capture snapshots of the lists
 	ups := s.uploaded
 	dls := s.downloaded
 	dels := s.deleted
-
-	// Reset internal state
 	s.uploaded = nil
 	s.downloaded = nil
 	s.deleted = nil
 	s.mu.Unlock()
 
-	// Print details
 	if len(ups) > 0 {
 		log.Println("☁️  Uploaded:")
 		for _, f := range ups {
@@ -729,11 +757,20 @@ func (s *Syncer) setRecently(rel string, d time.Duration) {
 	s.recently[rel] = time.Now().Add(d).Unix()
 }
 
+// isRecent reports whether rel was synced within its TTL window.
+// Expired entries are removed lazily to prevent unbounded map growth.
 func (s *Syncer) isRecent(rel string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	t, ok := s.recently[rel]
-	return ok && t > time.Now().Unix()
+	if !ok {
+		return false
+	}
+	if t <= time.Now().Unix() {
+		delete(s.recently, rel) // lazy cleanup
+		return false
+	}
+	return true
 }
 
 func (s *Syncer) clearRecently(rel string) {
