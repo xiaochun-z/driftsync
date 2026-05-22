@@ -16,6 +16,8 @@ import (
 	"github.com/xiaochun-z/driftsync/internal/store"
 )
 
+// DeviceCodeClient authenticates with Microsoft identity via the device code flow
+// and injects Bearer tokens into every outgoing HTTP request.
 type DeviceCodeClient struct {
 	Tenant     string
 	ClientID   string
@@ -53,6 +55,7 @@ func (c *DeviceCodeClient) deviceEndpoint() string {
 	return fmt.Sprintf("https://login.microsoftonline.com/%s/oauth2/v2.0/devicecode", c.Tenant)
 }
 
+// authRoundTripper injects an up-to-date Bearer token before each request.
 type authRoundTripper struct {
 	base http.RoundTripper
 	c    *DeviceCodeClient
@@ -69,6 +72,7 @@ func (rt *authRoundTripper) RoundTrip(req *http.Request) (*http.Response, error)
 	return rt.base.RoundTrip(req2)
 }
 
+// AuthorizedClient returns an *http.Client whose every request carries a valid Bearer token.
 func (c *DeviceCodeClient) AuthorizedClient(ctx context.Context) *http.Client {
 	base := &http.Transport{
 		Proxy:               http.ProxyFromEnvironment,
@@ -76,10 +80,11 @@ func (c *DeviceCodeClient) AuthorizedClient(ctx context.Context) *http.Client {
 		MaxIdleConnsPerHost: 64,
 		IdleConnTimeout:     90 * time.Second,
 	}
-	rt := &authRoundTripper{base: base, c: c}
-	return &http.Client{Transport: rt, Timeout: 0}
+	return &http.Client{Transport: &authRoundTripper{base: base, c: c}}
 }
 
+// EnsureLogin verifies that a valid token is available, starting an interactive
+// device-code flow if not.
 func (c *DeviceCodeClient) EnsureLogin(ctx context.Context) error {
 	if _, err := c.getValidToken(ctx); err == nil {
 		return nil
@@ -92,15 +97,17 @@ func (c *DeviceCodeClient) getValidToken(ctx context.Context) (*store.Tokens, er
 	if t := c.getCached(); t != nil && time.Until(t.ExpiresAt) > 2*time.Minute {
 		return t, nil
 	}
-	if t, err := c.Store.Load(ctx); err == nil {
-		if time.Until(t.ExpiresAt) > 2*time.Minute {
-			c.setCached(t)
-			return t, nil
-		}
-		if nt, err := c.refresh(ctx, t.RefreshToken); err == nil {
-			c.setCached(nt)
-			return nt, nil
-		}
+	t, err := c.Store.Load(ctx)
+	if err != nil {
+		return nil, errors.New("no valid token")
+	}
+	if time.Until(t.ExpiresAt) > 2*time.Minute {
+		c.setCached(t)
+		return t, nil
+	}
+	// Token exists but is near expiry — attempt silent refresh.
+	if nt, err := c.refresh(ctx, t.RefreshToken); err == nil {
+		return nt, nil
 	}
 	return nil, errors.New("no valid token")
 }
@@ -146,7 +153,6 @@ func (c *DeviceCodeClient) deviceCodeFlow(ctx context.Context) error {
 	if interval <= 0 {
 		interval = 5
 	}
-
 	deadline := time.Now().Add(time.Duration(d.ExpiresIn) * time.Second)
 	for time.Now().Before(deadline) {
 		time.Sleep(time.Duration(interval) * time.Second)
@@ -165,14 +171,37 @@ func (c *DeviceCodeClient) deviceCodeFlow(ctx context.Context) error {
 	return errors.New("device code expired before authorization")
 }
 
+// tokenResponse is the JSON shape returned by both the poll and refresh token endpoints.
+type tokenResponse struct {
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token"`
+	ExpiresIn    int    `json:"expires_in"`
+	TokenType    string `json:"token_type"`
+}
+
+func (t tokenResponse) toTokens() (*store.Tokens, error) {
+	if t.TokenType != "Bearer" {
+		return nil, fmt.Errorf("unexpected token_type %q (want Bearer)", t.TokenType)
+	}
+	return &store.Tokens{
+		AccessToken:  t.AccessToken,
+		RefreshToken: t.RefreshToken,
+		ExpiresAt:    time.Now().Add(time.Duration(t.ExpiresIn) * time.Second),
+	}, nil
+}
+
 func (c *DeviceCodeClient) pollToken(ctx context.Context, deviceCode string) (*store.Tokens, bool, error) {
 	vals := url.Values{}
 	vals.Set("grant_type", "urn:ietf:params:oauth:grant-type:device_code")
 	vals.Set("client_id", c.ClientID)
 	vals.Set("device_code", deviceCode)
 
-	req, _ := http.NewRequestWithContext(ctx, "POST", c.tokenEndpoint(), bytes.NewBufferString(vals.Encode()))
+	req, err := http.NewRequestWithContext(ctx, "POST", c.tokenEndpoint(), bytes.NewBufferString(vals.Encode()))
+	if err != nil {
+		return nil, false, fmt.Errorf("build poll request: %w", err)
+	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, false, err
@@ -181,32 +210,20 @@ func (c *DeviceCodeClient) pollToken(ctx context.Context, deviceCode string) (*s
 	b, _ := io.ReadAll(resp.Body)
 
 	if resp.StatusCode == 200 {
-		var t struct {
-			AccessToken  string `json:"access_token"`
-			RefreshToken string `json:"refresh_token"`
-			ExpiresIn    int    `json:"expires_in"`
-			TokenType    string `json:"token_type"`
-		}
+		var t tokenResponse
 		if err := json.Unmarshal(b, &t); err != nil {
 			return nil, false, err
 		}
-		if t.TokenType != "Bearer" {
-			return nil, false, fmt.Errorf("unexpected token type %s", t.TokenType)
-		}
-		return &store.Tokens{
-			AccessToken:  t.AccessToken,
-			RefreshToken: t.RefreshToken,
-			ExpiresAt:    time.Now().Add(time.Duration(t.ExpiresIn) * time.Second),
-		}, true, nil
+		tok, err := t.toTokens()
+		return tok, err == nil, err
 	}
 
 	var e struct {
-		Error     string `json:"error"`
-		ErrorDesc string `json:"error_description"`
+		Error string `json:"error"`
 	}
 	_ = json.Unmarshal(b, &e)
 	if e.Error == "authorization_pending" || e.Error == "slow_down" {
-		return nil, false, nil
+		return nil, false, nil // still waiting
 	}
 	return nil, false, fmt.Errorf("token poll http %d: %s", resp.StatusCode, string(b))
 }
@@ -218,8 +235,12 @@ func (c *DeviceCodeClient) refresh(ctx context.Context, refreshToken string) (*s
 	vals.Set("refresh_token", refreshToken)
 	vals.Set("scope", "offline_access Files.ReadWrite User.Read")
 
-	req, _ := http.NewRequestWithContext(ctx, "POST", c.tokenEndpoint(), bytes.NewBufferString(vals.Encode()))
+	req, err := http.NewRequestWithContext(ctx, "POST", c.tokenEndpoint(), bytes.NewBufferString(vals.Encode()))
+	if err != nil {
+		return nil, fmt.Errorf("build refresh request: %w", err)
+	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, err
@@ -230,19 +251,13 @@ func (c *DeviceCodeClient) refresh(ctx context.Context, refreshToken string) (*s
 		return nil, fmt.Errorf("refresh http %d: %s", resp.StatusCode, string(b))
 	}
 
-	var t struct {
-		AccessToken  string `json:"access_token"`
-		RefreshToken string `json:"refresh_token"`
-		ExpiresIn    int    `json:"expires_in"`
-		TokenType    string `json:"token_type"`
-	}
+	var t tokenResponse
 	if err := json.Unmarshal(b, &t); err != nil {
 		return nil, err
 	}
-	nt := &store.Tokens{
-		AccessToken:  t.AccessToken,
-		RefreshToken: t.RefreshToken,
-		ExpiresAt:    time.Now().Add(time.Duration(t.ExpiresIn) * time.Second),
+	nt, err := t.toTokens()
+	if err != nil {
+		return nil, err
 	}
 	if err := c.Store.Save(ctx, nt); err != nil {
 		return nil, err
