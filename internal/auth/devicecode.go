@@ -24,6 +24,8 @@ type DeviceCodeClient struct {
 	Store      *store.TokenStore
 	httpClient *http.Client
 
+	OnDeviceCode func(userCode, verificationURI string)
+
 	mu     sync.RWMutex
 	cached *store.Tokens
 }
@@ -140,13 +142,21 @@ func (c *DeviceCodeClient) deviceCodeFlow(ctx context.Context) error {
 		return err
 	}
 
-	if d.VerificationURIComplete != "" {
-		log.Printf("Visit: %s", d.VerificationURIComplete)
+	if c.OnDeviceCode != nil {
+		uri := d.VerificationURIComplete
+		if uri == "" {
+			uri = d.VerificationURI
+		}
+		c.OnDeviceCode(d.UserCode, uri)
 	} else {
-		log.Printf("Go to: %s and enter code: %s", d.VerificationURI, d.UserCode)
-	}
-	if d.Message != "" {
-		fmt.Println(d.Message)
+		if d.VerificationURIComplete != "" {
+			log.Printf("Visit: %s", d.VerificationURIComplete)
+		} else {
+			log.Printf("Go to: %s and enter code: %s", d.VerificationURI, d.UserCode)
+		}
+		if d.Message != "" {
+			fmt.Println(d.Message)
+		}
 	}
 
 	interval := d.Interval

@@ -110,7 +110,7 @@ func (s *Syncer) processDeltaItem(ctx context.Context, it graph.DriveItem, toDow
 	}
 
 	if it.File != nil {
-		if !s.filter.ShouldSync(pathRel, false) || isInternalConflictFile(pathRel) {
+		if !s.filter.ShouldSync(pathRel, false) {
 			return
 		}
 		mt, _ := time.Parse(time.RFC3339, it.LastModifiedDateTime)

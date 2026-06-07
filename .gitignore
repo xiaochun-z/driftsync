@@ -28,15 +28,41 @@ go.work.sum
 .env
 
 # Editor/IDE
-# .idea/
-# .vscode/
+.idea/
+.vscode/
+
+# SQLite databases & temp files
+driftsync.db
+driftsync.db-*
+*.db
+*.db-shm
+*.db-wal
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Project specific
 /driftsync
+/driftsync_cli
+/driftsync.exe
+/driftsync_cli.exe
 sync_list
 config.yaml
-driftsync.db
 onedrive_root/
 code*.txt
 dist/
 cmd/e2e/test_workspace/local_files
 cmd/e2e/test_workspace/driftsync.db-*
 /cmd/e2e/e2e
+
+# Wails GUI & Frontend
+build/bin/
+build/obj/
+frontend/node_modules/
+frontend/dist/

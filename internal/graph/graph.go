@@ -132,6 +132,52 @@ func (c *Client) GetItemByPath(ctx context.Context, relPath string) (*DriveItem,
 	return &it, nil
 }
 
+func (c *Client) ListChildren(ctx context.Context, relPath string) ([]DriveItem, error) {
+	var u string
+	if relPath == "" || relPath == "/" {
+		u = fmt.Sprintf("%s/me/drive/root/children", c.Base)
+	} else {
+		safe := escapePathSegments(relPath)
+		u = fmt.Sprintf("%s/me/drive/root:%s:/children", c.Base, safe)
+	}
+
+	var allItems []DriveItem
+
+	// Follow pagination
+	for u != "" {
+		req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
+		if err != nil {
+			return nil, fmt.Errorf("build list-children request: %w", err)
+		}
+		
+		resp, err := c.HTTP.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		
+		if resp.StatusCode != 200 {
+			b, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			return nil, fmt.Errorf("list children http %d: %s", resp.StatusCode, string(b))
+		}
+		
+		var page struct {
+			Value    []DriveItem `json:"value"`
+			NextLink string      `json:"@odata.nextLink"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&page); err != nil {
+			resp.Body.Close()
+			return nil, err
+		}
+		resp.Body.Close()
+		
+		allItems = append(allItems, page.Value...)
+		u = page.NextLink
+	}
+
+	return allItems, nil
+}
+
 func (c *Client) DeleteByPath(ctx context.Context, relPath string) error {
 	safe := escapePathSegments(relPath)
 	u := fmt.Sprintf("%s/me/drive/root:%s:", c.Base, safe)

@@ -39,20 +39,45 @@ It is optimized for large folder structures, low-change environments, and long�
 
 ## 📦 Installation
 
-**Build from source:**
+**Build the CLI from source:**
 
 ```bash
 # Linux / macOS
-go build -o driftsync ./cmd/driftsync
+go build -o driftsync_cli ./cmd/driftsync
 
 # Windows
-GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -trimpath -o driftsync.exe ./cmd/driftsync
+GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -trimpath -o driftsync_cli.exe ./cmd/driftsync
 
 # Embed version string at build time (optional)
-go build -ldflags="-s -w -X main.version=v1.0.0" -trimpath -o driftsync ./cmd/driftsync
+go build -ldflags="-s -w -X main.version=v1.0.0" -trimpath -o driftsync_cli ./cmd/driftsync
 ```
 
-Requires Go 1.25 or later.
+**Build the GUI Desktop App:**
+
+The graphical interface is built with [Wails](https://wails.io/) and Vue 3.
+
+*Note: Requires Go 1.25+ and Node.js.*
+
+**Prerequisites (Linux only):**
+You must install the necessary C development headers to compile the webview binding. For example, on **OpenSUSE**:
+```bash
+sudo zypper install gcc pkgconfig gtk3-devel webkitgtk4-devel
+```
+*(Note: `gcc`, `pkgconfig`, and `gtk3-devel` are essential for CGO and window management. `webkitgtk4-devel` provides the modern `webkit2gtk-4.1` library required for the webview. The older `webkitgtk3-devel` package is obsolete and not needed).*
+
+**Compilation:**
+
+```bash
+# 1. Install the Wails CLI
+go install github.com/wailsapp/wails/v2/cmd/wails@latest
+
+# 2. Build the desktop application
+wails build
+
+# On modern Linux distros (e.g., OpenSUSE, Ubuntu 24.04+), if you encounter a "webkit2gtk-4.0 not found" error, compile with the newer WebKit API:
+wails build -tags webkit2_41
+```
+The compiled graphical app will be placed in the `build/bin/` directory.
 
 ---
 
@@ -119,7 +144,7 @@ Every key can also be set via environment variable (takes precedence over the co
 ## ▶️ Running the Sync
 
 ```bash
-./driftsync --config ./config.yaml
+./driftsync_cli --config ./config.yaml
 ```
 
 On the first run you will be shown a device-code login prompt. Complete authentication in your browser; the token is saved automatically for subsequent runs.

@@ -63,6 +63,9 @@ type Syncer struct {
 
 	dbMu sync.Mutex // serialises all DB writes
 
+	// OnSyncEvent is an optional callback fired when a file is successfully synced.
+	OnSyncEvent func(action, rel string)
+
 	uploaded   []string
 	downloaded []string
 	deleted    []string
@@ -101,6 +104,11 @@ func (s *Syncer) SyncOnce(ctx context.Context) error {
 
 	if err := os.MkdirAll(s.cfg.LocalPath, 0o755); err != nil {
 		return fmt.Errorf("create local root: %w", err)
+	}
+
+	// Phase 0: cleanup local files that were previously synced but are now excluded.
+	if err := s.localCleanupExcluded(ctx); err != nil {
+		log.Printf("local cleanup excluded: %v", err)
 	}
 
 	// Phase 1: push local deletions to cloud first, so the cloud cannot

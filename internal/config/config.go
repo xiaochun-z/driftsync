@@ -23,6 +23,8 @@ type Config struct {
 
 	Sync *SelectiveYAML `yaml:"sync,omitempty"`
 	Log  *LogOptions    `yaml:"log,omitempty"`
+
+	IsFirstRun bool `yaml:"-" json:"is_first_run"`
 }
 
 type SelectiveYAML struct {
@@ -48,9 +50,19 @@ func Load(path string) (*Config, error) {
 	return &c, nil
 }
 
+func (c *Config) Save(path string) error {
+	b, err := yaml.Marshal(c)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, b, 0644)
+}
+
 func FromEnvFallback() *Config {
 	c := &Config{
-		Tenant:            "common",
+		Tenant:            "consumers",
+		ClientID:          "3ae224c9-f16c-42d1-bf5d-44151f2b99fa",
+		LocalPath:         "onedrive_root",
 		DownloadFromCloud: true,
 		UploadFromLocal:   true,
 		DownloadWorkers:   8,

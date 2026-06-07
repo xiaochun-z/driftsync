@@ -22,6 +22,10 @@ func (s *Syncer) itemPathRel(it graph.DriveItem) string {
 	if it.ParentReference != nil {
 		pp = it.ParentReference.Path
 	}
+	if pp == "" && it.Name == "root" {
+		// Drive root folder itself has no parent path
+		return ""
+	}
 	pp = strings.TrimPrefix(pp, "/drive/root:")
 	return strings.TrimPrefix(filepath.ToSlash(filepath.Join(pp, it.Name)), "/")
 }
@@ -129,6 +133,10 @@ func (s *Syncer) trackChange(action, rel string, size int64) {
 
 	if s.cfg.Log != nil && s.cfg.Log.Verbose {
 		log.Printf("[%s] %s (%d bytes)", strings.ToUpper(action), rel, size)
+	}
+	
+	if s.OnSyncEvent != nil {
+		s.OnSyncEvent(action, rel)
 	}
 }
 

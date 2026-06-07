@@ -15,6 +15,40 @@ import (
 	"github.com/xiaochun-z/driftsync/internal/ui"
 )
 
+// localCleanupExcluded scans the DB for files that were previously synced
+// but are now excluded by the configuration rules. It moves them to the local
+// trash and removes their DB records without deleting them from the cloud.
+func (s *Syncer) localCleanupExcluded(ctx context.Context) error {
+	dbPaths, err := store.ListAllPaths(ctx, s.db)
+	if err != nil {
+		return err
+	}
+
+	for _, rel := range dbPaths {
+		if rel == "" || rel == "." {
+			continue
+		}
+		if !s.filter.ShouldSync(rel, false) {
+			lp := filepath.Join(s.cfg.LocalPath, filepath.FromSlash(rel))
+			
+			// Only attempt trash if the file exists locally
+			if _, err := os.Stat(lp); err == nil {
+				if trashErr := s.moveToTrash(lp); trashErr != nil {
+					log.Printf("trash error for excluded file %s: %v", rel, trashErr)
+				} else {
+					log.Printf("clean up locally excluded: %s", rel)
+					s.trackChange("cleanup (local)", rel, 0)
+				}
+			}
+
+			s.dbMu.Lock()
+			_ = store.DeleteByPath(ctx, s.db, rel)
+			s.dbMu.Unlock()
+		}
+	}
+	return nil
+}
+
 // localDetectAndDeleteCloud compares the DB with the current local filesystem.
 // Files present in the DB but absent locally are deleted from the cloud,
 // propagating intentional local deletions to OneDrive.

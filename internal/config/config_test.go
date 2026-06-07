@@ -8,8 +8,8 @@ import (
 
 func TestFromEnvFallback_Defaults(t *testing.T) {
 	c := FromEnvFallback()
-	if c.Tenant != "common" {
-		t.Fatalf("expected tenant 'common', got %q", c.Tenant)
+	if c.Tenant != "consumers" {
+		t.Fatalf("expected tenant 'consumers', got %q", c.Tenant)
 	}
 	if !c.DownloadFromCloud {
 		t.Fatal("expected DownloadFromCloud=true")

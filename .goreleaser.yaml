@@ -2,7 +2,8 @@ version: 2
 project_name: driftsync
 
 builds:
-  - id: driftsync
+  - id: driftsync_cli
+    binary: driftsync_cli
     main: ./cmd/driftsync
     env: [CGO_ENABLED=0]
     ldflags:
