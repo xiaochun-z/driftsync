@@ -30,6 +30,10 @@ export function SelectDirectory() {
   return window['go']['main']['App']['SelectDirectory']();
 }
 
+export function SetWorkspaceLocation(arg1) {
+  return window['go']['main']['App']['SetWorkspaceLocation'](arg1);
+}
+
 export function StartOver() {
   return window['go']['main']['App']['StartOver']();
 }

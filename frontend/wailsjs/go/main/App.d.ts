@@ -17,6 +17,8 @@ export function SaveConfig(arg1:config.Config):Promise<void>;
 
 export function SelectDirectory():Promise<string>;
 
+export function SetWorkspaceLocation(arg1:string):Promise<void>;
+
 export function StartOver():Promise<void>;
 
 export function StartSync():Promise<void>;

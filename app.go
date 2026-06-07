@@ -35,8 +35,63 @@ func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 }
 
+func getAppDir() string {
+	// First, check for workspace pointer in home directory
+	home, err := os.UserHomeDir()
+	if err == nil {
+		ptrPath := filepath.Join(home, ".driftsync", "workspace.txt")
+		b, err := os.ReadFile(ptrPath)
+		if err == nil {
+			customPath := strings.TrimSpace(string(b))
+			if info, err := os.Stat(customPath); err == nil && info.IsDir() {
+				return customPath
+			}
+		}
+	}
+
+	// Fallback to portable mode (executable directory)
+	exe, err := os.Executable()
+	if err != nil {
+		return "."
+	}
+	return filepath.Dir(exe)
+}
+
+// SetWorkspaceLocation creates or updates the workspace pointer file.
+// This allows users to place their configuration in an arbitrary directory.
+func (a *App) SetWorkspaceLocation(targetPath string) error {
+	absPath, err := filepath.Abs(targetPath)
+	if err != nil {
+		return err
+	}
+	if info, err := os.Stat(absPath); err != nil || !info.IsDir() {
+		return fmt.Errorf("target is not a valid directory")
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+
+	driftsyncDir := filepath.Join(home, ".driftsync")
+	if err := os.MkdirAll(driftsyncDir, 0755); err != nil {
+		return err
+	}
+
+	ptrPath := filepath.Join(driftsyncDir, "workspace.txt")
+	return os.WriteFile(ptrPath, []byte(absPath), 0644)
+}
+
+func getConfigPath() string {
+	return filepath.Join(getAppDir(), "config.yaml")
+}
+
+func getDBPath() string {
+	return filepath.Join(getAppDir(), "driftsync.db")
+}
+
 func (a *App) GetConfig() (*config.Config, error) {
-	cfgPath := "config.yaml"
+	cfgPath := getConfigPath()
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
 		// Return and automatically save default config if it fails to load
@@ -53,9 +108,9 @@ func (a *App) SaveConfig(cfg *config.Config) error {
 		return err
 	}
 
-	oldCfg, _ := config.Load("config.yaml")
+	oldCfg, _ := config.Load(getConfigPath())
 
-	err := cfg.Save("config.yaml")
+	err := cfg.Save(getConfigPath())
 	if err != nil {
 		return err
 	}
@@ -64,7 +119,7 @@ func (a *App) SaveConfig(cfg *config.Config) error {
 		oldEx := strings.Join(oldCfg.Sync.Exclude, "|")
 		newEx := strings.Join(cfg.Sync.Exclude, "|")
 		if oldEx != newEx {
-			db, err := store.Open("driftsync.db")
+			db, err := store.Open(getDBPath())
 			if err == nil {
 				_ = store.SetMeta(a.ctx, db, "delta_link", "")
 				db.Close()
@@ -127,9 +182,17 @@ func (a *App) OpenDirectory(dir string) error {
 }
 
 func (a *App) LocateFile(target string) error {
-	absPath, err := filepath.Abs(target)
-	if err != nil {
-		return err
+	var absPath string
+	if target == "config.yaml" {
+		absPath = getConfigPath()
+	} else if target == "driftsync.db" {
+		absPath = getDBPath()
+	} else {
+		var err error
+		absPath, err = filepath.Abs(target)
+		if err != nil {
+			return err
+		}
 	}
 
 	if _, err := os.Stat(absPath); os.IsNotExist(err) {
@@ -174,7 +237,7 @@ func (a *App) StartSync() error {
 		a.syncCtx = nil
 	}()
 
-	cfgPath := "config.yaml"
+	cfgPath := getConfigPath()
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
@@ -184,7 +247,7 @@ func (a *App) StartSync() error {
 		return fmt.Errorf("invalid config: %w", err)
 	}
 
-	dbPath := filepath.Join(filepath.Dir(cfgPath), "driftsync.db")
+	dbPath := getDBPath()
 	db, err := store.Open(dbPath)
 	if err != nil {
 		return fmt.Errorf("open db: %w", err)
@@ -242,7 +305,7 @@ func (a *App) StopSync() {
 // GetStartOverPaths returns the absolute paths of the directories and files that will be permanently deleted.
 func (a *App) GetStartOverPaths() []string {
 	paths := []string{}
-	cfgPath, _ := filepath.Abs("config.yaml")
+	cfgPath := getConfigPath()
 
 	cfg, err := config.Load(cfgPath)
 	if err == nil && cfg.LocalPath != "" {
@@ -252,7 +315,7 @@ func (a *App) GetStartOverPaths() []string {
 
 	paths = append(paths, cfgPath)
 
-	dbPath := filepath.Join(filepath.Dir(cfgPath), "driftsync.db")
+	dbPath := getDBPath()
 	dbPathAbs, _ := filepath.Abs(dbPath)
 	paths = append(paths, dbPathAbs)
 	paths = append(paths, dbPathAbs+"-wal")
@@ -275,7 +338,7 @@ func (a *App) StartOver() error {
 // GetRemoteItems fetches the children (files and folders) of a remote directory. 
 // It handles authentication identically to StartSync.
 func (a *App) GetRemoteItems(relPath string) ([]graph.DriveItem, error) {
-	cfgPath := "config.yaml"
+	cfgPath := getConfigPath()
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load config: %w", err)
@@ -284,7 +347,7 @@ func (a *App) GetRemoteItems(relPath string) ([]graph.DriveItem, error) {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
 
-	dbPath := filepath.Join(filepath.Dir(cfgPath), "driftsync.db")
+	dbPath := getDBPath()
 	db, err := store.Open(dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("open db: %w", err)

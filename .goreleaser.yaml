@@ -22,7 +22,7 @@ archives:
 
 nfpms:
   - id: linux-packages
-    package_name: driftsync
+    package_name: driftsync-cli
     formats: [deb, rpm]
     bindir: /usr/bin        # 二进制会自动安装到这里
     section: utils
