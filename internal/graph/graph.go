@@ -24,26 +24,35 @@ func NewClient(httpClient *http.Client) *Client {
 	return &Client{HTTP: httpClient, Base: "https://graph.microsoft.com/v1.0"}
 }
 
+type DriveItemHashes struct {
+	Sha256Hash string `json:"sha256Hash"`
+}
+
+type DriveItemFile struct {
+	MimeType string           `json:"mimeType"`
+	Hashes   *DriveItemHashes `json:"hashes"`
+}
+
+type DriveItemFolder struct {
+	ChildCount int `json:"childCount"`
+}
+
+type DriveItemParentReference struct {
+	Path string `json:"path"`
+}
+
+
 type DriveItem struct {
-	ID                   string `json:"id"`
-	Name                 string `json:"name"`
-	Size                 int64  `json:"size"`
-	ETag                 string `json:"eTag"`
-	CTag                 string `json:"cTag"`
-	LastModifiedDateTime string `json:"lastModifiedDateTime"`
-	File *struct {
-		MimeType string `json:"mimeType"`
-		Hashes   *struct {
-			Sha256Hash string `json:"sha256Hash"`
-		} `json:"hashes"`
-	} `json:"file"`
-	Folder *struct {
-		ChildCount int `json:"childCount"`
-	} `json:"folder"`
-	ParentReference *struct {
-		Path string `json:"path"`
-	} `json:"parentReference"`
-	Deleted *struct{} `json:"deleted"`
+	ID                   string                    `json:"id"`
+	Name                 string                    `json:"name"`
+	Size                 int64                     `json:"size"`
+	ETag                 string                    `json:"eTag"`
+	CTag                 string                    `json:"cTag"`
+	LastModifiedDateTime string                    `json:"lastModifiedDateTime"`
+	File                 *DriveItemFile            `json:"file"`
+	Folder               *DriveItemFolder          `json:"folder"`
+	ParentReference      *DriveItemParentReference `json:"parentReference"`
+	Deleted              map[string]any            `json:"deleted"`
 }
 
 type DeltaResponse struct {
