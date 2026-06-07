@@ -86,9 +86,7 @@ func TestItemPathRel(t *testing.T) {
 	for _, c := range cases {
 		it := graph.DriveItem{
 			Name: c.name,
-			ParentReference: &struct {
-				Path string `json:"path"`
-			}{Path: c.parentPath},
+			ParentReference: &graph.DriveItemParentReference{Path: c.parentPath},
 		}
 		got := s.itemPathRel(it)
 		if got != c.want {
