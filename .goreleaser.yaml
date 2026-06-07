@@ -14,7 +14,7 @@ builds:
 
 archives:
   - id: by_os
-    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    name_template: "{{ .ProjectName }}_cli_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     files:
       - LICENSE
       - README.md
@@ -22,7 +22,7 @@ archives:
 
 nfpms:
   - id: linux-packages
-    package_name: driftsync-cli
+    package_name: driftsync_cli
     formats: [deb, rpm]
     bindir: /usr/bin        # 二进制会自动安装到这里
     section: utils

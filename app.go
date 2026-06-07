@@ -57,6 +57,10 @@ func getAppDir() string {
 	return filepath.Dir(exe)
 }
 
+func (a *App) GetAppVersion() string {
+	return Version
+}
+
 // SetWorkspaceLocation creates or updates the workspace pointer file.
 // This allows users to place their configuration in an arbitrary directory.
 func (a *App) SetWorkspaceLocation(targetPath string) error {

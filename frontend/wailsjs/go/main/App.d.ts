@@ -3,6 +3,8 @@
 import {config} from '../models';
 import {graph} from '../models';
 
+export function GetAppVersion():Promise<string>;
+
 export function GetConfig():Promise<config.Config>;
 
 export function GetRemoteItems(arg1:string):Promise<Array<graph.DriveItem>>;
