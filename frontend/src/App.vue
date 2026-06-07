@@ -23,7 +23,11 @@ const config = ref<any>({
 const deviceCode = ref('')
 const verificationURI = ref('')
 const showAuthModal = ref(false)
-const syncLog = ref<string[]>([])
+interface LogMsg {
+  type: string;
+  text: string;
+}
+const syncLog = ref<LogMsg[]>([])
 const isCopied = ref(false)
 
 const logContainer = ref<HTMLElement | null>(null)
@@ -130,23 +134,28 @@ onMounted(async () => {
 
   EventsOn("loginSuccess", () => {
     showAuthModal.value = false
-    syncLog.value.push("Login successful.")
+    syncLog.value.push({ type: 'info', text: "Login successful." })
   })
 
   await loadConfig()
 
   EventsOn("syncEvent", (msg: string) => {
-    syncLog.value.push("> " + msg)
+    let t = 'info'
+    let ttext = msg
+    if (msg.startsWith('[DOWNLOAD]')) { t = 'D'; ttext = msg.replace('[DOWNLOAD] ', '') }
+    else if (msg.startsWith('[UPLOAD]')) { t = 'U'; ttext = msg.replace('[UPLOAD] ', '') }
+    else if (msg.startsWith('[DELETE]')) { t = 'X'; ttext = msg.replace('[DELETE] ', '') }
+    syncLog.value.push({ type: t, text: ttext })
   })
 
   EventsOn("syncStarted", () => {
     isSyncing.value = true
-    syncLog.value.push("Sync started...")
+    syncLog.value.push({ type: 'info', text: "Sync started..." })
   })
 
   EventsOn("syncCompleted", () => {
     isSyncing.value = false
-    syncLog.value.push("Sync completed.")
+    syncLog.value.push({ type: 'info', text: "Sync completed." })
     // Invalidate the frontend tree cache to reflect deleted/added files
     wizardRootNodes.value = []
     if (currentTab.value === 'settings' || currentTab.value === 'setup') {
@@ -261,15 +270,16 @@ const locateDb = async () => {
 }
 
 const startSync = async () => {
+  if (isSyncing.value) return
   if (localStorage.getItem('driftsync_setup_done') !== 'true') {
-    syncLog.value = ["Authenticating and fetching remote directories..."]
+    syncLog.value = [{ type: 'info', text: "Authenticating and fetching remote directories..." }]
     isSyncing.value = true
     try {
       await loadWizardNodes()
       currentTab.value = 'setup'
       syncLog.value = []
     } catch (e: any) {
-      syncLog.value.push("Error: " + e)
+      syncLog.value.push({ type: 'info', text: "Error: " + e })
     } finally {
       isSyncing.value = false
     }
@@ -281,15 +291,19 @@ const startSync = async () => {
   try {
     await StartSync()
   } catch (e: any) {
-    syncLog.value.push("Error: " + e)
+    syncLog.value.push({ type: 'info', text: "Error: " + e })
     isSyncing.value = false
   }
 }
 
 const stopSync = async () => {
-  await StopSync()
+  try {
+    await StopSync()
+  } catch (e: any) {
+    console.error(e)
+  }
   isSyncing.value = false
-  syncLog.value.push("Sync stopped by user.")
+  syncLog.value.push({ type: 'info', text: "Sync stopped by user." })
 }
 
 const openBrowser = () => {
@@ -377,8 +391,16 @@ const closeAuthModal = async () => {
             </div>
             <div ref="logContainer" @scroll="handleLogScroll" class="flex-1 bg-slate-900/50 rounded-xl border border-slate-800/80 p-3 font-mono text-[11px] text-slate-400 overflow-y-auto shadow-inner custom-scrollbar relative backdrop-blur-sm">
               <div v-if="syncLog.length === 0" class="text-slate-600 italic absolute inset-0 flex items-center justify-center">Ready to sync</div>
-              <div v-for="(log, i) in syncLog" :key="i" class="py-1 border-b border-slate-800/30 last:border-0 leading-relaxed break-words" :class="{'text-emerald-400/90': log.includes('UPLOAD'), 'text-blue-400/90': log.includes('DOWNLOAD'), 'text-red-400/90': log.includes('DELETE')}">
-                {{ log }}
+              <div v-for="(log, i) in syncLog" :key="i" class="py-1.5 border-b border-slate-800/30 last:border-0 leading-relaxed break-words flex items-start gap-2.5" :class="{'text-emerald-400/90': log.type==='U', 'text-blue-400/90': log.type==='D', 'text-red-400/90': log.type==='X', 'text-slate-400': log.type==='info'}">
+                <div v-if="log.type !== 'info'" class="w-[18px] h-[18px] shrink-0 flex items-center justify-center rounded bg-slate-800/80 border border-slate-700/50 mt-[2px] text-[9px] font-bold shadow-sm">
+                  {{ log.type }}
+                </div>
+                <div v-else class="w-[18px] h-[18px] shrink-0 flex items-center justify-center text-slate-500 mt-[2px]">
+                  <svg class="w-[14px] h-[14px]" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                </div>
+                <div class="flex-1 mt-[2px]">
+                  {{ log.text }}
+                </div>
               </div>
             </div>
           </div>
