@@ -79,6 +79,13 @@ wails build -tags webkit2_41
 ```
 The compiled graphical app will be placed in the `build/bin/` directory.
 
+> **⚠️ Note for macOS Users:**
+> Because DriftSync is an open-source tool distributed without an Apple Developer Signature, macOS Gatekeeper may report the GUI app as "damaged" or "from an unidentified developer" when you first try to open it. This is normal. To fix this and allow the app to run, open your Terminal and run the following command to remove the quarantine attribute:
+> ```bash
+> xattr -cr /path/to/DriftSync.app
+> ```
+> After running this command, you can double-click the app to open it normally. The CLI version (`driftsync_cli`) can usually be run by just allowing it in System Settings > Privacy & Security, or by right-clicking and selecting Open.
+
 ---
 
 ## ⚙️ Configuration

@@ -68,13 +68,13 @@ jobs:
         shell: bash
 
       - name: Build Windows amd64
-        run: wails build -platform windows/amd64 -ldflags "-X main.Version=${APP_VERSION}"
+        run: wails build -platform windows/amd64 -ldflags "-X main.Version=${{ env.APP_VERSION }}"
 
       - name: Rename Output (amd64)
         run: mv build/bin/driftsync.exe build/bin/driftsync_gui_windows_amd64.exe
 
       - name: Build Windows arm64
-        run: wails build -platform windows/arm64 -ldflags "-X main.Version=${APP_VERSION}"
+        run: wails build -platform windows/arm64 -ldflags "-X main.Version=${{ env.APP_VERSION }}"
 
       - name: Rename Output (arm64)
         run: mv build/bin/driftsync.exe build/bin/driftsync_gui_windows_arm64.exe
@@ -121,7 +121,7 @@ jobs:
         shell: bash
 
       - name: Build Linux amd64
-        run: wails build -platform linux/amd64 -tags webkit2_41 -ldflags "-X main.Version=${APP_VERSION}"
+        run: wails build -platform linux/amd64 -tags webkit2_41 -ldflags "-X main.Version=${{ env.APP_VERSION }}"
 
       - name: Package Linux Binary
         run: |
@@ -134,3 +134,58 @@ jobs:
         with:
           files: |
             build/bin/driftsync_gui_linux_amd64.tar.gz
+
+  # 4. 编译 GUI 程序 (macOS amd64 & arm64)
+  build-gui-macos:
+    needs: goreleaser-cli
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.4"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 20
+
+      - name: Install Wails
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@latest
+
+      - name: Determine Version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "APP_VERSION=${{ github.event.inputs.version }}" >> $GITHUB_ENV
+          else
+            echo "APP_VERSION=${{ github.ref_name }}" >> $GITHUB_ENV
+          fi
+        shell: bash
+
+      - name: Build macOS amd64
+        run: wails build -platform darwin/amd64 -ldflags "-X main.Version=${{ env.APP_VERSION }}"
+
+      - name: Package macOS amd64
+        run: |
+          cd build/bin
+          zip -r driftsync_gui_macos_amd64.app.zip driftsync.app
+          rm -rf driftsync.app
+
+      - name: Build macOS arm64
+        run: wails build -platform darwin/arm64 -ldflags "-X main.Version=${{ env.APP_VERSION }}"
+
+      - name: Package macOS arm64
+        run: |
+          cd build/bin
+          zip -r driftsync_gui_macos_arm64.app.zip driftsync.app
+
+      - name: Upload GUI Release Assets
+        uses: softprops/action-gh-release@v3
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: |
+            build/bin/driftsync_gui_macos_amd64.app.zip
+            build/bin/driftsync_gui_macos_arm64.app.zip

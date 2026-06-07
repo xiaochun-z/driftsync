@@ -9,7 +9,7 @@ builds:
     ldflags:
       - -s -w
       - -X main.version={{.Version}}
-    goos: [linux, windows]
+    goos: [linux, windows, darwin]
     goarch: [amd64, arm64]
 
 archives:
