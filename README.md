@@ -1,71 +1,90 @@
-# driftsync
+# DriftSync
 
-`driftsync` is a command-line tool for fast, reliable, incremental synchronization between a **local directory** and **Microsoft OneDrive** using the **Delta API**.
-It is optimized for large folder structures, low-change environments, and long‑running use inside Dev Containers, Linux servers, WSL, or Windows hosts.
+`DriftSync` is a fast, reliable, incremental synchronization tool for **Microsoft OneDrive**. Powered by the OneDrive Delta API, it is optimized for large folder structures and low-change environments.
+
+DriftSync offers both a **modern Graphical User Interface (GUI)** for desktop users and a **headless Command-Line Interface (CLI)** for servers, WSL, and Dev Containers.
 
 ---
 
-## ✨ Core Features
+## Part 1: Capabilities & Features
+
+### 🖥️ Modern Graphical User Interface (New!)
+- Built with **Vue 3** and **Wails**, providing a sleek, native-feeling desktop experience.
+- Interactive **Setup Wizard** to help you configure your local sync directory and authentication.
+- Real-time **Dashboard** displaying sync progress, upload/download statistics, and beautifully color-coded logs.
+- Interactive **Selective Sync** tree view: easily browse your OneDrive and check/uncheck folders to sync.
 
 ### 🔄 Incremental Sync via Delta API
-- Tracks file changes using OneDrive Delta API
-- Minimizes bandwidth usage
-- Avoids re-uploading unchanged files
+- Tracks file changes using the official OneDrive Delta API.
+- Minimizes bandwidth usage and avoids re-uploading unchanged files by calculating local SHA-256 hashes and comparing them against the cloud.
 
-### 🗄 Local SQLite Metadata Store
-- Keeps a persistent local database (`driftsync.db`) next to your config file
-- Stores SHA-256 hashes, timestamps, and delta tokens
-- Ensures safe resume and consistent sync across runs
+### 🗄 Flexible Local Metadata Store
+- Keeps a persistent local database (`driftsync.db`) to store file hashes, timestamps, and delta tokens, ensuring safe resumes across runs.
+- **Customizable Config Location:** By default, configuration (`config.yaml`) and database files are stored in the binary's directory, but you can set a custom global path via the GUI settings or the `~/.driftsync/workspace.txt` pointer file.
 
 ### 🔐 Secure Authentication (Device Code Flow)
-- Native Microsoft identity login (no browser dependency required)
-- Tokens are stored locally and refreshed automatically
+- Uses Microsoft's Device Code flow for login. No local browser dependencies or complex redirect URIs required.
+- OAuth tokens are stored locally and refreshed automatically.
 
-### 🚀 Lightweight & Cross‑Platform
-- Written in Go, single binary, no runtime dependencies
-- Runs on Linux, macOS, Windows, WSL, and Dev Containers
+### 📁 Advanced Selective Sync
+- **GUI:** Visually select exactly which folders you want to sync.
+- **CLI/Config:** Use a YAML `sync:` block or a `.txt` file to define granular include/exclude rules (e.g., exclude `node_modules`, `*.tmp`, or hidden directories). **Exclude rules always take priority.**
 
-### 📁 Selective Sync Support
-- Include or exclude specific paths via YAML config or a text sync-list file
-- Exclude rules take priority over include rules
+### 🛡 Safety & Trash System
+- Modified local files are never silently overwritten by cloud changes. Conflict files are automatically created (e.g. `file.cloud-conflict-20240101.md`).
+- Deleted files (both locally and remote) are moved to `.driftsync_trash/` before removal. They are **never permanently deleted** without your manual cleanup.
+- System files (`.DS_Store`, `Thumbs.db`, `desktop.ini`) are automatically ignored.
 
-### 🛡 Safety Features
-- Modified local files are never silently overwritten by cloud changes
-- Deleted files are moved to `.driftsync_trash/` before removal (not permanently deleted)
-- System files (`.DS_Store`, `Thumbs.db`, `desktop.ini`) are automatically ignored
-- Conflict files are written alongside the original (e.g. `file.cloud-conflict-20240101-120000.md`)
+### 🚀 Cross-Platform Support
+- Available as a standalone binary for **Linux**, **Windows**, and **macOS** (both Intel `amd64` and Apple Silicon `arm64`).
+- No runtime dependencies like Python, Java, or heavy Electron frameworks.
 
 ---
 
-## 📦 Installation
+## Part 2: Developer Guide (How to Compile)
 
-**Build the CLI from source:**
+DriftSync is split into two targets: the headless **CLI** and the Wails-powered **GUI**.
 
-```bash
-# Linux / macOS
-go build -o driftsync_cli ./cmd/driftsync
+### 🛠 Prerequisites
 
-# Windows
-GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -trimpath -o driftsync_cli.exe ./cmd/driftsync
+To build DriftSync from source, you will need:
+1. **Go 1.25+**
+2. **Node.js 20+** (Required only for the GUI)
+3. **C/C++ Compiler & Dev Headers** (Required for the GUI on Linux/macOS)
 
-# Embed version string at build time (optional)
-go build -ldflags="-s -w -X main.version=v1.0.0" -trimpath -o driftsync_cli ./cmd/driftsync
-```
-
-**Build the GUI Desktop App:**
-
-The graphical interface is built with [Wails](https://wails.io/) and Vue 3.
-
-*Note: Requires Go 1.25+ and Node.js.*
-
-**Prerequisites (Linux only):**
+**Linux Prerequisites (GUI Only):**
 You must install the necessary C development headers to compile the webview binding. For example, on **OpenSUSE**:
 ```bash
 sudo zypper install gcc pkgconfig gtk3-devel webkitgtk4-devel
 ```
-*(Note: `gcc`, `pkgconfig`, and `gtk3-devel` are essential for CGO and window management. `webkitgtk4-devel` provides the modern `webkit2gtk-4.1` library required for the webview. The older `webkitgtk3-devel` package is obsolete and not needed).*
+*(Note: `webkitgtk4-devel` provides the modern `webkit2gtk-4.1` library. On Ubuntu/Debian, use `libgtk-3-dev libwebkit2gtk-4.1-dev`)*.
 
-**Compilation:**
+---
+
+### 📦 Compiling the CLI
+
+The CLI is a pure Go application (`CGO_ENABLED=0`).
+
+```bash
+# Clone the repository
+git clone https://github.com/xiaochun-z/driftsync.git
+cd driftsync
+
+# Linux / macOS (Native)
+CGO_ENABLED=0 go build -ldflags="-s -w" -o driftsync_cli ./cmd/driftsync
+
+# Windows (Cross-compilation from Linux/macOS)
+GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" -o driftsync_cli.exe ./cmd/driftsync
+
+# macOS (Cross-compilation from Linux/Windows for Apple Silicon)
+GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -ldflags="-s -w" -o driftsync_cli_macos ./cmd/driftsync
+```
+
+---
+
+### 🖼️ Compiling the GUI (Wails)
+
+The GUI requires **CGO** and the [Wails](https://wails.io/) toolkit. **Cross-compilation of macOS GUI apps from Windows/Linux is not supported by Wails.** You must compile the macOS app on a macOS machine.
 
 ```bash
 # 1. Install the Wails CLI
@@ -74,8 +93,11 @@ go install github.com/wailsapp/wails/v2/cmd/wails@latest
 # 2. Build the desktop application
 wails build
 
-# On modern Linux distros (e.g., OpenSUSE, Ubuntu 24.04+), if you encounter a "webkit2gtk-4.0 not found" error, compile with the newer WebKit API:
+# On modern Linux distros, compile with the newer WebKit API:
 wails build -tags webkit2_41
+
+# Embed a specific version string (e.g., v1.0.0) during compilation
+wails build -ldflags "-X main.Version=v1.0.0"
 ```
 The compiled graphical app will be placed in the `build/bin/` directory.
 
@@ -84,175 +106,43 @@ The compiled graphical app will be placed in the `build/bin/` directory.
 > ```bash
 > xattr -cr /path/to/DriftSync.app
 > ```
-> After running this command, you can double-click the app to open it normally. The CLI version (`driftsync_cli`) can usually be run by just allowing it in System Settings > Privacy & Security, or by right-clicking and selecting Open.
+> After running this command, you can double-click the app to open it normally.
 
 ---
 
-## ⚙️ Configuration
+### ⚙️ Configuration Reference (For CLI Users)
 
-Copy `config.sample.yaml` and edit it:
+If you are bypassing the GUI, you can manually create a `config.yaml` file next to the binary:
 
 ```yaml
-tenant: consumers           # "consumers" for personal accounts, "common" for any, or your Azure tenant GUID
+tenant: consumers           # "consumers" (personal), "common", or Azure tenant GUID
 client_id: "<your-client-id>"
-
-local_path: "/var/data/onedrive"   # absolute or relative path to local sync root
+local_path: "/var/data/onedrive"
 
 download_from_cloud: true
 upload_from_local: true
 
 download_workers: 8
 upload_workers: 8
-upload_chunk_mb: 8          # chunk size for large file uploads (>4 MB)
-upload_parallel: 2          # parallel chunk uploads per file (max 4)
+upload_chunk_mb: 8          # chunk size for large files
+upload_parallel: 2          # max parallel chunks
 
-interactive: false          # prompt to resolve conflicts instead of defaulting to "keep both"
+interactive: false          # CLI prompt for conflicts
 
-log:
-  list_checked: false       # log every file checked during upload scan
-  verbose: false            # log every upload/download/delete action
-```
-
-### Config field reference
-
-| Field | Default | Description |
-|---|---|---|
-| `tenant` | `common` | Azure AD tenant. Use `consumers` for personal OneDrive, `common` for any account, or a specific tenant GUID. |
-| `client_id` | — | **Required.** Azure app registration client ID. |
-| `local_path` | — | **Required.** Local directory to sync. |
-| `download_from_cloud` | `true` | Pull changes from OneDrive to local. |
-| `upload_from_local` | `true` | Push local changes to OneDrive. |
-| `sync_list_path` | — | Path to a text-based sync list file (see [Selective Sync](#-selective-sync)). Ignored if `sync:` section is present. |
-| `download_workers` | `8` | Parallel download goroutines. |
-| `upload_workers` | `8` | Parallel upload goroutines. |
-| `upload_chunk_mb` | `8` | Chunk size in MB for resumable uploads (files >4 MB). Rounded to nearest 320 KiB boundary. |
-| `upload_parallel` | `2` | Parallel chunk workers per large file (capped at 4). |
-| `interactive` | `false` | When `true`, prompts on conflict instead of auto-selecting "keep both". |
-| `log.list_checked` | `false` | Log every file inspected during upload scan. |
-| `log.verbose` | `false` | Log every individual sync action. |
-
-### Environment variable overrides
-
-Every key can also be set via environment variable (takes precedence over the config file):
-
-| Variable | Config field |
-|---|---|
-| `DRIFTSYNC_TENANT` | `tenant` |
-| `DRIFTSYNC_CLIENT_ID` | `client_id` |
-| `DRIFTSYNC_LOCAL_PATH` | `local_path` |
-| `DRIFTSYNC_SYNC_LIST` | `sync_list_path` |
-| `DRIFTSYNC_DOWNLOAD_WORKERS` | `download_workers` |
-| `DRIFTSYNC_UPLOAD_WORKERS` | `upload_workers` |
-| `DRIFTSYNC_UPLOAD_CHUNK_MB` | `upload_chunk_mb` |
-| `DRIFTSYNC_UPLOAD_PARALLEL` | `upload_parallel` |
-
----
-
-## ▶️ Running the Sync
-
-```bash
-./driftsync_cli --config ./config.yaml
-```
-
-On the first run you will be shown a device-code login prompt. Complete authentication in your browser; the token is saved automatically for subsequent runs.
-
-### CLI flags
-
-| Flag | Alias | Description |
-|---|---|---|
-| `--config <path>` | | Path to `config.yaml` (default: `config.yaml` in current directory) |
-| `--interactive` | `-i` | Enable interactive conflict resolution (overrides config) |
-| `--version` | | Print version and exit |
-| `--help` | | Show usage |
-
----
-
-## 📁 Selective Sync
-
-You can restrict which files participate in sync using either a YAML section in the config or a separate text file. If both are present, the `sync:` YAML section takes priority.
-
-**Exclude rules always take priority over include rules.**
-
-### Option 1 — YAML `sync:` section (recommended)
-
-Add a `sync:` block to your `config.yaml`:
-
-```yaml
 sync:
   include:
-    - /docs          # only the `docs` directory at the root
-    - "*.md"         # any .md file anywhere in the tree
-    - images         # any directory named `images` at any depth
+    - /docs
   exclude:
-    - /docs/work.json     # exclude a specific file inside an included dir
     - "*.tmp"
-    - /build
     - node_modules
-    - obsidian/.obsidian/ # exclude a hidden config subfolder
 ```
 
-### Option 2 — text sync-list file
-
-Set `sync_list_path` in your config to point to a plain-text file. Each line is a rule:
-
-- Lines starting with `-` or `!` are **exclude** rules; all others are **include** rules.
-- A leading `/` anchors the rule to the sync root (prefix match).
-- No leading `/` matches the pattern **anywhere** in the tree (supports `*` and `?` wildcards).
-- Lines starting with `#` or `;` are comments.
-
-```
-/docs
-/projects
--*.tmp
--/docs/work.json
--node_modules
-```
-
-### How matching works
-
-| Pattern | Matches |
-|---|---|
-| `/docs` | `docs/` subtree at the root |
-| `docs` | any directory named `docs` at any depth |
-| `*.md` | any `.md` file anywhere |
-| `/docs/work.json` | only that exact file |
-| `node_modules` | any `node_modules/` directory at any depth |
-| `obsidian/.obsidian/` | the `.obsidian/` subdirectory inside `obsidian/` |
-
----
-
-## 🗃 Database & State
-
-The SQLite database is stored alongside your config file:
-
-```
-config.yaml
-driftsync.db
-```
-
-The database holds:
-- Per-file SHA-256 hash, size, mtime, and ETag
-- The OneDrive Delta API token (enables incremental sync on next run)
-- OAuth tokens
-
-Do not delete `driftsync.db` unless you want to force a full re-sync on the next run.
-
----
-
-## 🗑 Trash & Safety
-
-Files deleted from OneDrive or locally are moved to `.driftsync_trash/` inside `local_path` before being removed. They are **not** permanently deleted. You can manually clean this folder when you are satisfied the deletions were correct.
-
-The trash folder itself is never uploaded to OneDrive.
+Every configuration key can also be overridden via environment variables (e.g., `DRIFTSYNC_LOCAL_PATH`, `DRIFTSYNC_CLIENT_ID`).
 
 ---
 
 ## 📝 License
-
 GNU General Public License v3.0 — see [LICENSE](LICENSE) for details.
 
----
-
 ## 🤝 Contributions
-
 Pull requests and feature suggestions are welcome!
