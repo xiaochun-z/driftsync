@@ -1,0 +1,12 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=DriftSync
+GenericName=File Sync Tool
+Comment=Fast, reliable drift-aware file sync tool
+Exec=/usr/bin/driftsync-gui
+Icon=driftsync-gui
+Terminal=false
+StartupNotify=true
+Categories=Utility;FileManager;
+Keywords=sync;drift;backup;files;

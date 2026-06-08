@@ -1,0 +1,47 @@
+# nfpm configuration for DriftSync GUI (Linux .deb / .rpm)
+# Version is injected at CI time via environment variable: NFPM_VERSION
+# Usage:
+#   nfpm package --config build/linux/nfpm.yaml --packager deb
+#   nfpm package --config build/linux/nfpm.yaml --packager rpm
+
+name: driftsync-gui
+arch: amd64
+platform: linux
+version: ${NFPM_VERSION}
+
+maintainer: "caden <xiaochun.zh@outlook.com>"
+description: |
+  DriftSync GUI — fast, reliable drift-aware file sync tool.
+  Provides a graphical interface built with Wails (WebKit2GTK).
+homepage: "https://github.com/xiaochun-z/driftsync"
+license: MIT
+section: utils
+priority: optional
+
+# Runtime dependencies split by format:
+# - deb uses Debian/Ubuntu package names
+# - rpm uses Fedora/RHEL package names
+overrides:
+  deb:
+    depends:
+      - libgtk-3-0
+      - libwebkit2gtk-4.1-0
+  rpm:
+    depends:
+      - gtk3
+      - webkit2gtk4.1
+
+contents:
+  # Main executable
+  - src: build/bin/driftsync
+    dst: /usr/bin/driftsync-gui
+    file_info:
+      mode: 0755
+
+  # Desktop entry (shows app in GNOME/KDE/XFCE application menus)
+  - src: build/linux/driftsync-gui.desktop
+    dst: /usr/share/applications/driftsync-gui.desktop
+
+  # Application icon
+  - src: build/appicon.png
+    dst: /usr/share/pixmaps/driftsync-gui.png
