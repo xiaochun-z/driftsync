@@ -159,6 +159,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: gui-linux-bundle
+          path: build/bin
 
       - name: Determine Version
         run: |
