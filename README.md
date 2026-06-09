@@ -4,38 +4,42 @@
 
 DriftSync offers both a **modern Graphical User Interface (GUI)** for desktop users and a **headless Command-Line Interface (CLI)** for servers, WSL, and Dev Containers.
 
+# Screenshots
+
+![](screenshots/request-access.png)
+![](screenshots/driftsync-gui-windows.png)
 ---
 
 ## Part 1: Capabilities & Features
 
-### 🖥️ Modern Graphical User Interface (New!)
+### Modern Graphical User Interface (New!)
 - Built with **Vue 3** and **Wails**, providing a sleek, native-feeling desktop experience.
 - Interactive **Setup Wizard** to help you configure your local sync directory and authentication.
 - Real-time **Dashboard** displaying sync progress, upload/download statistics, and beautifully color-coded logs.
 - Interactive **Selective Sync** tree view: easily browse your OneDrive and check/uncheck folders to sync.
 
-### 🔄 Incremental Sync via Delta API
+### Incremental Sync via Delta API
 - Tracks file changes using the official OneDrive Delta API.
 - Minimizes bandwidth usage and avoids re-uploading unchanged files by calculating local SHA-256 hashes and comparing them against the cloud.
 
-### 🗄 Flexible Local Metadata Store
+### Flexible Local Metadata Store
 - Keeps a persistent local database (`driftsync.db`) to store file hashes, timestamps, and delta tokens, ensuring safe resumes across runs.
 - **Customizable Config Location:** By default, configuration (`config.yaml`) and database files are stored in the binary's directory, but you can set a custom global path via the GUI settings or the `~/.driftsync/workspace.txt` pointer file.
 
-### 🔐 Secure Authentication (Device Code Flow)
+### Secure Authentication (Device Code Flow)
 - Uses Microsoft's Device Code flow for login. No local browser dependencies or complex redirect URIs required.
 - OAuth tokens are stored locally and refreshed automatically.
 
-### 📁 Advanced Selective Sync
+### Advanced Selective Sync
 - **GUI:** Visually select exactly which folders you want to sync.
 - **CLI/Config:** Use a YAML `sync:` block or a `.txt` file to define granular include/exclude rules (e.g., exclude `node_modules`, `*.tmp`, or hidden directories). **Exclude rules always take priority.**
 
-### 🛡 Safety & Trash System
+### Safety & Trash System
 - Modified local files are never silently overwritten by cloud changes. Conflict files are automatically created (e.g. `file.cloud-conflict-20240101.md`).
 - Deleted files (both locally and remote) are moved to `.driftsync_trash/` before removal. They are **never permanently deleted** without your manual cleanup.
 - System files (`.DS_Store`, `Thumbs.db`, `desktop.ini`) are automatically ignored.
 
-### 🚀 Cross-Platform Support
+### Cross-Platform Support
 - Available as a standalone binary for **Linux**, **Windows**, and **macOS** (both Intel `amd64` and Apple Silicon `arm64`).
 - No runtime dependencies like Python, Java, or heavy Electron frameworks.
 
@@ -45,7 +49,7 @@ DriftSync offers both a **modern Graphical User Interface (GUI)** for desktop us
 
 DriftSync is split into two targets: the headless **CLI** and the Wails-powered **GUI**.
 
-### 🛠 Prerequisites
+### Prerequisites
 
 To build DriftSync from source, you will need:
 1. **Go 1.25+**
@@ -61,7 +65,7 @@ sudo zypper install gcc pkgconfig gtk3-devel webkitgtk4-devel
 
 ---
 
-### 📦 Compiling the CLI
+### Compiling the CLI
 
 The CLI is a pure Go application (`CGO_ENABLED=0`).
 
@@ -82,7 +86,7 @@ GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 go build -ldflags="-s -w" -o driftsync_cl
 
 ---
 
-### 🖼️ Compiling the GUI (Wails)
+###  Compiling the GUI (Wails)
 
 The GUI requires **CGO** and the [Wails](https://wails.io/) toolkit. **Cross-compilation of macOS GUI apps from Windows/Linux is not supported by Wails.** You must compile the macOS app on a macOS machine.
 
@@ -101,7 +105,7 @@ wails build -ldflags "-X main.Version=v1.0.0"
 ```
 The compiled graphical app will be placed in the `build/bin/` directory.
 
-> **⚠️ Note for macOS Users:**
+> ** Note for macOS Users:**
 > Because DriftSync is an open-source tool distributed without an Apple Developer Signature, macOS Gatekeeper may report the GUI app as "damaged" or "from an unidentified developer" when you first try to open it. This is normal. To fix this and allow the app to run, open your Terminal and run the following command to remove the quarantine attribute:
 > ```bash
 > xattr -cr /path/to/DriftSync.app
@@ -110,7 +114,7 @@ The compiled graphical app will be placed in the `build/bin/` directory.
 
 ---
 
-### ⚙️ Configuration Reference (For CLI Users)
+### Configuration Reference (For CLI Users)
 
 If you are bypassing the GUI, you can manually create a `config.yaml` file next to the binary:
 
@@ -141,8 +145,8 @@ Every configuration key can also be overridden via environment variables (e.g., 
 
 ---
 
-## 📝 License
+## License
 GNU General Public License v3.0 — see [LICENSE](LICENSE) for details.
 
-## 🤝 Contributions
+## Contributions
 Pull requests and feature suggestions are welcome!
