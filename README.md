@@ -8,9 +8,9 @@ DriftSync offers both a **modern Graphical User Interface (GUI)** for desktop us
 
 ![](screenshots/request-access.png)
 
-![](screenshots/driftsync-gui-windows.png | width=100)
+![Screenshot on Windows 11](screenshots/driftsync-gui-windows.png)
 
-![](screenshots/driftsync-gui-manjaro.png | width=100)
+![Screenshot on Linux](screenshots/driftsync-gui-manjaro.png)
 
 ---
 
