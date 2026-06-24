@@ -35,27 +35,7 @@ func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 }
 
-func getAppDir() string {
-	// First, check for workspace pointer in home directory
-	home, err := os.UserHomeDir()
-	if err == nil {
-		ptrPath := filepath.Join(home, ".driftsync", "workspace.txt")
-		b, err := os.ReadFile(ptrPath)
-		if err == nil {
-			customPath := strings.TrimSpace(string(b))
-			if info, err := os.Stat(customPath); err == nil && info.IsDir() {
-				return customPath
-			}
-		}
-	}
 
-	// Fallback to portable mode (executable directory)
-	exe, err := os.Executable()
-	if err != nil {
-		return "."
-	}
-	return filepath.Dir(exe)
-}
 
 func (a *App) GetAppVersion() string {
 	return Version
@@ -87,11 +67,11 @@ func (a *App) SetWorkspaceLocation(targetPath string) error {
 }
 
 func getConfigPath() string {
-	return filepath.Join(getAppDir(), "config.yaml")
+	return filepath.Join(config.GetAppDir(), "config.yaml")
 }
 
 func getDBPath() string {
-	return filepath.Join(getAppDir(), "driftsync.db")
+	return filepath.Join(config.GetAppDir(), "driftsync.db")
 }
 
 func (a *App) GetConfig() (*config.Config, error) {

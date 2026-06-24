@@ -48,7 +48,7 @@ func main() {
 
 	cfgPath := *cfgPathFlag
 	if cfgPath == "" {
-		cfgPath = "config.yaml"
+		cfgPath = filepath.Join(config.GetAppDir(), "config.yaml")
 	}
 
 	// Provide an actionable hint if the config file is missing.
