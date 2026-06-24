@@ -21,6 +21,7 @@ priority: optional
 # Runtime dependencies split by format:
 # - deb uses Debian/Ubuntu package names
 # - rpm uses Fedora/RHEL package names
+# - archlinux uses Arch Linux package names
 overrides:
   deb:
     depends:
@@ -30,6 +31,10 @@ overrides:
     depends:
       - gtk3
       - webkit2gtk4.1
+  archlinux:
+    depends:
+      - gtk3
+      - webkit2gtk-4.1
 
 contents:
   # Main executable

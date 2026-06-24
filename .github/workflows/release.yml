@@ -172,7 +172,7 @@ jobs:
       - name: Install nfpm
         run: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
 
-      - name: Package as .deb and .rpm
+      - name: Package as .deb, .rpm and Arch Linux package
         env:
           NFPM_VERSION: ${{ env.APP_VERSION }}
         run: |
@@ -181,14 +181,16 @@ jobs:
           chmod +x build/bin/driftsync
           nfpm package --config build/linux/nfpm.yaml --packager deb --target .
           nfpm package --config build/linux/nfpm.yaml --packager rpm --target .
+          nfpm package --config build/linux/nfpm.yaml --packager archlinux --target .
 
-      - name: Upload .deb/.rpm to Release
+      - name: Upload Linux packages to Release
         uses: softprops/action-gh-release@v3
         if: startsWith(github.ref, 'refs/tags/')
         with:
           files: |
             ./*.deb
             ./*.rpm
+            ./*.pkg.tar.zst
 
   # 5. 编译 GUI 程序 (macOS amd64 & arm64)
   build-gui-macos:
