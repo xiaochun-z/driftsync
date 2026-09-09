@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	goRuntime "runtime"
 	"strings"
+	"sync"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 	"github.com/xiaochun-z/driftsync/internal/auth"
@@ -22,6 +23,7 @@ type App struct {
 	ctx      context.Context
 	syncCtx  context.Context
 	cancelFn context.CancelFunc
+	syncMu   sync.Mutex
 }
 
 // NewApp creates a new App application struct
@@ -105,7 +107,11 @@ func (a *App) SaveConfig(cfg *config.Config) error {
 		if oldEx != newEx {
 			db, err := store.Open(getDBPath())
 			if err == nil {
-				_ = store.SetMeta(a.ctx, db, "delta_link", "")
+				ctx := a.ctx
+				if ctx == nil {
+					ctx = context.Background()
+				}
+				_ = store.SetMeta(ctx, db, "delta_link", "")
 				db.Close()
 			}
 		}
@@ -211,14 +217,25 @@ func (a *App) LocateFile(target string) error {
 }
 
 func (a *App) StartSync() error {
+	a.syncMu.Lock()
 	if a.cancelFn != nil {
+		a.syncMu.Unlock()
 		return fmt.Errorf("sync is already running")
 	}
 
-	a.syncCtx, a.cancelFn = context.WithCancel(a.ctx)
+	parentCtx := a.ctx
+	if parentCtx == nil {
+		parentCtx = context.Background()
+	}
+	a.syncCtx, a.cancelFn = context.WithCancel(parentCtx)
+	syncCtx := a.syncCtx
+	a.syncMu.Unlock()
+
 	defer func() {
+		a.syncMu.Lock()
 		a.cancelFn = nil
 		a.syncCtx = nil
+		a.syncMu.Unlock()
 	}()
 
 	cfgPath := getConfigPath()
@@ -249,10 +266,10 @@ func (a *App) StartSync() error {
 		})
 	}
 
-	httpClient := authClient.AuthorizedClient(a.syncCtx)
+	httpClient := authClient.AuthorizedClient(syncCtx)
 	g := graph.NewClient(httpClient)
 
-	if err := authClient.EnsureLogin(a.syncCtx); err != nil {
+	if err := authClient.EnsureLogin(syncCtx); err != nil {
 		return fmt.Errorf("login failed: %w", err)
 	}
 
@@ -269,8 +286,8 @@ func (a *App) StartSync() error {
 	// Send an event that sync started
 	runtime.EventsEmit(a.ctx, "syncStarted")
 
-	if err := s.SyncOnce(a.syncCtx); err != nil {
-		if a.syncCtx.Err() != nil {
+	if err := s.SyncOnce(syncCtx); err != nil {
+		if syncCtx.Err() != nil {
 			return fmt.Errorf("sync cancelled")
 		}
 		return fmt.Errorf("sync error: %w", err)
@@ -281,6 +298,8 @@ func (a *App) StartSync() error {
 }
 
 func (a *App) StopSync() {
+	a.syncMu.Lock()
+	defer a.syncMu.Unlock()
 	if a.cancelFn != nil {
 		a.cancelFn()
 	}

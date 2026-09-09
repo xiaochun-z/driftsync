@@ -124,6 +124,9 @@ func (s *Syncer) localScanAndUpload(ctx context.Context) error {
 	for i := 0; i < workers; i++ {
 		wg.Go(func() {
 			for t := range jobs {
+				if ctx.Err() != nil {
+					return
+				}
 				if err := s.uploadWorker(ctx, t.E); err != nil {
 					log.Printf("upload error %s: %v", t.E.PathRel, err)
 				}
@@ -132,6 +135,9 @@ func (s *Syncer) localScanAndUpload(ctx context.Context) error {
 	}
 
 	for _, e := range entries {
+		if ctx.Err() != nil {
+			break
+		}
 		if e.IsDir || e.PathRel == "" || e.PathRel == "." {
 			continue
 		}
@@ -169,6 +175,14 @@ func (s *Syncer) uploadWorker(ctx context.Context, e scan.Entry) error {
 
 	dbOld, _ := store.GetByPathFull(ctx, s.db, e.PathRel)
 	if dbOld != nil && h == dbOld.Shasum {
+		if dbOld.Mtime != e.Mtime {
+			s.dbMu.Lock()
+			_ = store.UpsertItem(ctx, s.db, store.Item{
+				ID: dbOld.ID, PathRel: e.PathRel, ETag: dbOld.ETag, Size: e.Size, Mtime: e.Mtime,
+				Shasum: h, LastSrc: dbOld.LastSrc, LastSync: dbOld.LastSync,
+			})
+			s.dbMu.Unlock()
+		}
 		return nil // content unchanged
 	}
 

@@ -144,3 +144,30 @@ func TestTextList_ExcludeNestedHiddenDir(t *testing.T) {
 		t.Fatalf("should include obsidian/Note.md from text list")
 	}
 }
+
+func TestExcludeSubdirDoesNotExcludeParentDir(t *testing.T) {
+	// Exclude deep nested directory
+	l := FromYAML(nil, []string{"/Photos/2024"})
+
+	// Ancestor directories must NOT be excluded
+	if !l.ShouldSync("Photos", true) {
+		t.Fatalf("parent directory /Photos should NOT be excluded when only /Photos/2024 is excluded")
+	}
+
+	// Sibling directories / files under parent must NOT be excluded
+	if !l.ShouldSync("Photos/2023", true) {
+		t.Fatalf("sibling directory /Photos/2023 should NOT be excluded")
+	}
+	if !l.ShouldSync("Photos/cover.jpg", false) {
+		t.Fatalf("file /Photos/cover.jpg should NOT be excluded")
+	}
+
+	// Target directory and its contents MUST be excluded
+	if l.ShouldSync("Photos/2024", true) {
+		t.Fatalf("directory /Photos/2024 should be excluded")
+	}
+	if l.ShouldSync("Photos/2024/vacation.jpg", false) {
+		t.Fatalf("file /Photos/2024/vacation.jpg should be excluded")
+	}
+}
+

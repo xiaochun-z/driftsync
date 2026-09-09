@@ -129,7 +129,7 @@ func (l *List) ShouldSync(pathRel string, isDir bool) bool {
 
 func (l *List) matchExclude(p string) bool {
 	for _, rule := range l.ExcludeAbs {
-		if prefixMatch(p, rule) {
+		if prefixMatchExclude(p, rule) {
 			return true
 		}
 	}
@@ -144,7 +144,7 @@ func (l *List) matchExclude(p string) bool {
 
 func (l *List) matchInclude(p string) bool {
 	for _, rule := range l.IncludeAbs {
-		if prefixMatch(p, rule) {
+		if prefixMatchInclude(p, rule) {
 			return true
 		}
 	}
@@ -157,7 +157,21 @@ func (l *List) matchInclude(p string) bool {
 	return false
 }
 
-func prefixMatch(p, rule string) bool {
+// prefixMatchExclude matches if p is equal to or a subpath of rule.
+// Ancestor directories of rule must NOT be excluded.
+func prefixMatchExclude(p, rule string) bool {
+	if !strings.HasSuffix(p, "/") {
+		p += "/"
+	}
+	if !strings.HasSuffix(rule, "/") {
+		rule += "/"
+	}
+	return strings.HasPrefix(p, rule)
+}
+
+// prefixMatchInclude matches if p is equal to, a subpath of, or an ancestor of rule
+// (allowing directory traversal to reach included sub-items).
+func prefixMatchInclude(p, rule string) bool {
 	if !strings.HasSuffix(p, "/") {
 		p += "/"
 	}

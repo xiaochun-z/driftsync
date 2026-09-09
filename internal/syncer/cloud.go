@@ -211,6 +211,9 @@ func (s *Syncer) processDownloads(ctx context.Context, tasks []dlTask) error {
 	for i := 0; i < workers; i++ {
 		wg.Go(func() {
 			for t := range jobs {
+				if ctx.Err() != nil {
+					return
+				}
 				if err := s.downloadWorker(ctx, t); err != nil {
 					log.Printf("download error [%s]: %v", t.PathRel, err)
 					errMu.Lock()
@@ -276,9 +279,13 @@ func (s *Syncer) downloadWorker(ctx context.Context, t dlTask) error {
 	// Smart sync: content already matches (e.g. metadata-only cloud update).
 	if localExists && t.Sha256 != "" && localHash == t.Sha256 {
 		log.Printf("[SMART] Content match (metadata update only): %s", t.PathRel)
+		var mtime int64
+		if fi, err := os.Stat(lp); err == nil {
+			mtime = fi.ModTime().Unix()
+		}
 		s.dbMu.Lock()
 		_ = store.UpsertItem(ctx, s.db, store.Item{
-			ID: t.ID, PathRel: t.PathRel, ETag: t.ETag, Size: t.Size,
+			ID: t.ID, PathRel: t.PathRel, ETag: t.ETag, Size: t.Size, Mtime: mtime,
 			Shasum: localHash, LastSrc: "cloud", LastSync: time.Now().Unix(),
 		})
 		s.dbMu.Unlock()
@@ -296,10 +303,21 @@ func (s *Syncer) downloadWorker(ctx context.Context, t dlTask) error {
 		return fmt.Errorf("integrity check failed for %s: sha256 mismatch", t.PathRel)
 	}
 
+	// Preserve cloud modification time on disk if available
+	if !t.ModTime.IsZero() {
+		_ = os.Chtimes(targetPath, t.ModTime, t.ModTime)
+	}
+
 	if targetPath == lp {
+		var mtime int64
+		if !t.ModTime.IsZero() {
+			mtime = t.ModTime.Unix()
+		} else if fi, err := os.Stat(lp); err == nil {
+			mtime = fi.ModTime().Unix()
+		}
 		s.dbMu.Lock()
 		_ = store.UpsertItem(ctx, s.db, store.Item{
-			ID: t.ID, PathRel: t.PathRel, ETag: t.ETag, Size: t.Size,
+			ID: t.ID, PathRel: t.PathRel, ETag: t.ETag, Size: t.Size, Mtime: mtime,
 			Shasum: newHash, LastSrc: "cloud", LastSync: time.Now().Unix(),
 		})
 		s.dbMu.Unlock()

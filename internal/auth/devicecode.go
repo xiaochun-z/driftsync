@@ -165,10 +165,18 @@ func (c *DeviceCodeClient) deviceCodeFlow(ctx context.Context) error {
 	}
 	deadline := time.Now().Add(time.Duration(d.ExpiresIn) * time.Second)
 	for time.Now().Before(deadline) {
-		time.Sleep(time.Duration(interval) * time.Second)
-		nt, done, err := c.pollToken(ctx, d.DeviceCode)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Duration(interval) * time.Second):
+		}
+
+		nt, done, slowDown, err := c.pollToken(ctx, d.DeviceCode)
 		if err != nil {
 			return err
+		}
+		if slowDown {
+			interval += 5
 		}
 		if done {
 			if err := c.Store.Save(ctx, nt); err != nil {
@@ -200,7 +208,7 @@ func (t tokenResponse) toTokens() (*store.Tokens, error) {
 	}, nil
 }
 
-func (c *DeviceCodeClient) pollToken(ctx context.Context, deviceCode string) (*store.Tokens, bool, error) {
+func (c *DeviceCodeClient) pollToken(ctx context.Context, deviceCode string) (*store.Tokens, bool, bool, error) {
 	vals := url.Values{}
 	vals.Set("grant_type", "urn:ietf:params:oauth:grant-type:device_code")
 	vals.Set("client_id", c.ClientID)
@@ -208,13 +216,13 @@ func (c *DeviceCodeClient) pollToken(ctx context.Context, deviceCode string) (*s
 
 	req, err := http.NewRequestWithContext(ctx, "POST", c.tokenEndpoint(), bytes.NewBufferString(vals.Encode()))
 	if err != nil {
-		return nil, false, fmt.Errorf("build poll request: %w", err)
+		return nil, false, false, fmt.Errorf("build poll request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, false, err
+		return nil, false, false, err
 	}
 	defer resp.Body.Close()
 	b, _ := io.ReadAll(resp.Body)
@@ -222,20 +230,23 @@ func (c *DeviceCodeClient) pollToken(ctx context.Context, deviceCode string) (*s
 	if resp.StatusCode == 200 {
 		var t tokenResponse
 		if err := json.Unmarshal(b, &t); err != nil {
-			return nil, false, err
+			return nil, false, false, err
 		}
 		tok, err := t.toTokens()
-		return tok, err == nil, err
+		return tok, err == nil, false, err
 	}
 
 	var e struct {
 		Error string `json:"error"`
 	}
 	_ = json.Unmarshal(b, &e)
-	if e.Error == "authorization_pending" || e.Error == "slow_down" {
-		return nil, false, nil // still waiting
+	if e.Error == "slow_down" {
+		return nil, false, true, nil // still waiting, increase polling interval
 	}
-	return nil, false, fmt.Errorf("token poll http %d: %s", resp.StatusCode, string(b))
+	if e.Error == "authorization_pending" {
+		return nil, false, false, nil // still waiting
+	}
+	return nil, false, false, fmt.Errorf("token poll http %d: %s", resp.StatusCode, string(b))
 }
 
 func (c *DeviceCodeClient) refresh(ctx context.Context, refreshToken string) (*store.Tokens, error) {

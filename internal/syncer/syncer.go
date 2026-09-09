@@ -111,10 +111,12 @@ func (s *Syncer) SyncOnce(ctx context.Context) error {
 		log.Printf("local cleanup excluded: %v", err)
 	}
 
-	// Phase 1: push local deletions to cloud first, so the cloud cannot
-	// resurrect a file the user intentionally deleted.
-	if err := s.localDetectAndDeleteCloud(ctx); err != nil {
-		log.Printf("local→cloud delete: %v", err)
+	// Phase 1: push local deletions to cloud first (only when uploading is enabled),
+	// so the cloud cannot resurrect a file the user intentionally deleted.
+	if s.cfg.UploadFromLocal {
+		if err := s.localDetectAndDeleteCloud(ctx); err != nil {
+			log.Printf("local→cloud delete: %v", err)
+		}
 	}
 
 	// Phase 2: apply cloud changes.
