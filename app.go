@@ -9,6 +9,7 @@ import (
 	goRuntime "runtime"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 	"github.com/xiaochun-z/driftsync/internal/auth"
@@ -24,6 +25,59 @@ type App struct {
 	syncCtx  context.Context
 	cancelFn context.CancelFunc
 	syncMu   sync.Mutex
+	syncWg   sync.WaitGroup
+}
+
+// isDangerousPath checks whether a path is root, user home, current directory, or a critical system directory.
+func isDangerousPath(p string) bool {
+	clean := filepath.Clean(p)
+	if clean == "" || clean == "." || clean == "/" || clean == "\\" {
+		return true
+	}
+
+	// Check volume/drive root (e.g. "C:\", "/", "D:\")
+	vol := filepath.VolumeName(clean)
+	if vol != "" && (clean == vol || clean == vol+"\\" || clean == vol+"/") {
+		return true
+	}
+
+	// Check user home directory
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		if samePath(home, clean) {
+			return true
+		}
+	}
+
+	// Check current working directory
+	if wd, err := os.Getwd(); err == nil && wd != "" {
+		if samePath(wd, clean) {
+			return true
+		}
+	}
+
+	// Check critical system directories
+	lower := strings.ToLower(clean)
+	systemDirs := []string{
+		"c:\\windows", "c:\\program files", "c:\\program files (x86)",
+		"/bin", "/sbin", "/usr", "/usr/bin", "/etc", "/var", "/lib", "/sys", "/proc",
+		"/system", "/library", "/applications",
+	}
+	for _, sys := range systemDirs {
+		if lower == sys || strings.HasPrefix(lower, sys+"\\") || strings.HasPrefix(lower, sys+"/") {
+			return true
+		}
+	}
+
+	return false
+}
+
+// samePath compares cleaned paths using Windows' case-insensitive semantics.
+func samePath(a, b string) bool {
+	a, b = filepath.Clean(a), filepath.Clean(b)
+	if goRuntime.GOOS == "windows" {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
 }
 
 // NewApp creates a new App application struct
@@ -36,8 +90,6 @@ func NewApp() *App {
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 }
-
-
 
 func (a *App) GetAppVersion() string {
 	return Version
@@ -131,7 +183,7 @@ func (a *App) OpenDirectory(dir string) error {
 	if err != nil {
 		return err
 	}
-	
+
 	if _, err := os.Stat(absPath); os.IsNotExist(err) {
 		res, err := runtime.MessageDialog(a.ctx, runtime.MessageDialogOptions{
 			Type:          runtime.QuestionDialog,
@@ -152,7 +204,7 @@ func (a *App) OpenDirectory(dir string) error {
 	} else if err != nil {
 		return err
 	}
-	
+
 	var cmd string
 	var args []string
 
@@ -229,6 +281,7 @@ func (a *App) StartSync() error {
 	}
 	a.syncCtx, a.cancelFn = context.WithCancel(parentCtx)
 	syncCtx := a.syncCtx
+	a.syncWg.Add(1)
 	a.syncMu.Unlock()
 
 	defer func() {
@@ -236,6 +289,7 @@ func (a *App) StartSync() error {
 		a.cancelFn = nil
 		a.syncCtx = nil
 		a.syncMu.Unlock()
+		a.syncWg.Done()
 	}()
 
 	cfgPath := getConfigPath()
@@ -307,38 +361,118 @@ func (a *App) StopSync() {
 
 // GetStartOverPaths returns the absolute paths of the directories and files that will be permanently deleted.
 func (a *App) GetStartOverPaths() []string {
-	paths := []string{}
+	localPath, statePaths := a.startOverPaths()
+	if localPath != "" {
+		return append([]string{localPath}, statePaths...)
+	}
+	return statePaths
+}
+
+// startOverPaths snapshots all targets before deletion can change the workspace.
+// Configuration is removed last so failures can still be retried.
+func (a *App) startOverPaths() (string, []string) {
+	var localPath string
 	cfgPath := getConfigPath()
 
 	cfg, err := config.Load(cfgPath)
-	if err == nil && cfg.LocalPath != "" {
-		localPathAbs, _ := filepath.Abs(cfg.LocalPath)
-		paths = append(paths, localPathAbs)
+	if err == nil && strings.TrimSpace(cfg.LocalPath) != "" {
+		localPathAbs, err := filepath.Abs(cfg.LocalPath)
+		if err == nil && !isDangerousPath(localPathAbs) {
+			localPath = localPathAbs
+		}
 	}
 
-	paths = append(paths, cfgPath)
-
-	dbPath := getDBPath()
+	dbPath := filepath.Join(filepath.Dir(cfgPath), "driftsync.db")
 	dbPathAbs, _ := filepath.Abs(dbPath)
-	paths = append(paths, dbPathAbs)
-	paths = append(paths, dbPathAbs+"-wal")
-	paths = append(paths, dbPathAbs+"-shm")
+	return localPath, []string{dbPathAbs, dbPathAbs + "-wal", dbPathAbs + "-shm", cfgPath}
+}
 
-	return paths
+// removeLocalData leaves state files and their ancestor directories in place.
+// The returned directories are ordered from children to parents for removal
+// after all local data and state files have been deleted successfully.
+func removeLocalData(path string, statePaths []string) ([]string, error) {
+	containsState := false
+	for _, statePath := range statePaths {
+		if samePath(path, statePath) {
+			return nil, nil
+		}
+		rel, err := filepath.Rel(path, statePath)
+		if err == nil && !filepath.IsAbs(rel) && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			containsState = true
+		}
+	}
+	if !containsState {
+		return nil, os.RemoveAll(path)
+	}
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !info.IsDir() {
+		return nil, os.RemoveAll(path)
+	}
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return nil, err
+	}
+	var dirs []string
+	for _, entry := range entries {
+		childDirs, err := removeLocalData(filepath.Join(path, entry.Name()), statePaths)
+		if err != nil {
+			return nil, err
+		}
+		dirs = append(dirs, childDirs...)
+	}
+	return append(dirs, path), nil
 }
 
 // StartOver wipes all user configuration, local files, and the database.
 func (a *App) StartOver() error {
 	a.StopSync()
 
-	for _, p := range a.GetStartOverPaths() {
-		_ = os.RemoveAll(p)
+	// Wait up to 5 seconds for any running sync process to gracefully exit and release database/file handles
+	done := make(chan struct{})
+	go func() {
+		a.syncWg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		return fmt.Errorf("timed out waiting for active sync to stop before StartOver")
+	}
+
+	localPath, statePaths := a.startOverPaths()
+	var remainingDirs []string
+	if localPath != "" {
+		var err error
+		remainingDirs, err = removeLocalData(localPath, statePaths)
+		if err != nil {
+			return fmt.Errorf("failed to delete %s: %w", localPath, err)
+		}
+	}
+	for _, p := range statePaths {
+		if isDangerousPath(p) {
+			continue
+		}
+		if err := os.RemoveAll(p); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("failed to delete %s: %w", p, err)
+		}
+	}
+	for _, dir := range remainingDirs {
+		if err := os.Remove(dir); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("failed to delete %s: %w", dir, err)
+		}
 	}
 
 	return nil
 }
 
-// GetRemoteItems fetches the children (files and folders) of a remote directory. 
+// GetRemoteItems fetches the children (files and folders) of a remote directory.
 // It handles authentication identically to StartSync.
 func (a *App) GetRemoteItems(relPath string) ([]graph.DriveItem, error) {
 	cfgPath := getConfigPath()
@@ -384,4 +518,3 @@ func (a *App) GetRemoteItems(relPath string) ([]graph.DriveItem, error) {
 
 	return items, nil
 }
-

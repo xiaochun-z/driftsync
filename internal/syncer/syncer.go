@@ -115,7 +115,7 @@ func (s *Syncer) SyncOnce(ctx context.Context) error {
 	// so the cloud cannot resurrect a file the user intentionally deleted.
 	if s.cfg.UploadFromLocal {
 		if err := s.localDetectAndDeleteCloud(ctx); err != nil {
-			log.Printf("local→cloud delete: %v", err)
+			return fmt.Errorf("local→cloud delete: %w", err)
 		}
 	}
 

@@ -2,6 +2,7 @@ package syncer
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -70,6 +71,8 @@ func (s *Syncer) localDetectAndDeleteCloud(ctx context.Context) error {
 		return err
 	}
 
+	var toDelete []string
+	trackedCount := 0
 	for _, rel := range dbPaths {
 		if rel == "" || rel == "." {
 			continue
@@ -77,10 +80,36 @@ func (s *Syncer) localDetectAndDeleteCloud(ctx context.Context) error {
 		if !s.filter.ShouldSync(rel, false) {
 			continue
 		}
-		if _, exists := localFiles[rel]; exists {
-			continue
+		trackedCount++
+		if _, exists := localFiles[rel]; !exists {
+			toDelete = append(toDelete, rel)
 		}
+	}
 
+	if len(toDelete) == 0 {
+		return nil
+	}
+
+	// SAFETY CIRCUIT BREAKER:
+	// 1. If local folder has NO files at all, but DB has tracked files to delete,
+	// it usually indicates the sync directory is unmounted, offline, or accidentally empty.
+	if len(localFiles) == 0 && len(toDelete) > 0 {
+		log.Printf("[SAFETY ABORT] Local sync directory %q is completely empty while %d tracked file(s) exist in DB. Aborting cloud deletion to prevent catastrophic data loss.", s.cfg.LocalPath, len(toDelete))
+		return fmt.Errorf("safety abort: local sync directory %q is empty, refusing to delete %d cloud file(s)", s.cfg.LocalPath, len(toDelete))
+	}
+
+	// 2. Mass deletion threshold: if deleting >= 20 files AND more than 50% of all tracked files,
+	// abort automatic silent mass deletion to protect cloud assets.
+	const massDeleteMinCount = 20
+	const massDeleteRatio = 0.5
+	if trackedCount >= massDeleteMinCount && len(toDelete) >= massDeleteMinCount && float64(len(toDelete))/float64(trackedCount) > massDeleteRatio {
+		pct := float64(len(toDelete)) / float64(trackedCount) * 100
+		log.Printf("[SAFETY ABORT] Mass deletion detected: attempting to delete %d of %d tracked files (%.1f%%). Exceeds safety threshold. Aborting cloud deletion.",
+			len(toDelete), trackedCount, pct)
+		return fmt.Errorf("safety abort: mass deletion detected (%d/%d files, %.1f%%), refusing to auto-delete cloud files", len(toDelete), trackedCount, pct)
+	}
+
+	for _, rel := range toDelete {
 		lp := filepath.Join(s.cfg.LocalPath, filepath.FromSlash(rel))
 
 		// Safety double-check: abort if the file appeared between scan and now.

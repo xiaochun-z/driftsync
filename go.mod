@@ -1,6 +1,6 @@
 module github.com/xiaochun-z/driftsync
 
-go 1.26.4
+go 1.27.3
 
 require (
 	github.com/theckman/yacspin v0.13.12
