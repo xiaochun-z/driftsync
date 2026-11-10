@@ -17,17 +17,27 @@ type Item struct {
 }
 
 func UpsertItem(ctx context.Context, db *sql.DB, it Item) error {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
 	// 1. Pre-cleanup: Ensure no OTHER item occupies this path (fixes UNIQUE constraint violation)
 	// If an item exists with the same path_rel but a DIFFERENT ID, delete it first.
-	_, _ = db.ExecContext(ctx, `DELETE FROM items WHERE path_rel = ? AND id != ?`, it.PathRel, it.ID)
+	if _, err := tx.ExecContext(ctx, `DELETE FROM items WHERE path_rel = ? AND id != ?`, it.PathRel, it.ID); err != nil {
+		return err
+	}
 
 	// 2. Perform the Upsert
-	_, err := db.ExecContext(ctx, `INSERT INTO items(id, path_rel, etag, size, mtime, shasum, last_src, last_sync)
+	_, err = tx.ExecContext(ctx, `INSERT INTO items(id, path_rel, etag, size, mtime, shasum, last_src, last_sync)
 	VALUES (?,?,?,?,?,?,?,?)
 	ON CONFLICT(id) DO UPDATE SET path_rel=excluded.path_rel, etag=excluded.etag, size=excluded.size, mtime=excluded.mtime,
 	shasum=excluded.shasum, last_src=excluded.last_src, last_sync=excluded.last_sync`,
-		it.ID, it.PathRel, it.ETag,  it.Size, it.Mtime, it.Shasum, it.LastSrc, it.LastSync)
-	return err
+		it.ID, it.PathRel, it.ETag, it.Size, it.Mtime, it.Shasum, it.LastSrc, it.LastSync)
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func GetByPathFull(ctx context.Context, db *sql.DB, pathRel string) (*Item, error) {

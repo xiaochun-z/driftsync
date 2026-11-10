@@ -2,6 +2,8 @@ package syncer
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -31,7 +33,7 @@ func (s *Syncer) localCleanupExcluded(ctx context.Context) error {
 		}
 		if !s.filter.ShouldSync(rel, false) {
 			lp := filepath.Join(s.cfg.LocalPath, filepath.FromSlash(rel))
-			
+
 			// Only attempt trash if the file exists locally
 			if _, err := os.Stat(lp); err == nil {
 				if trashErr := s.moveToTrash(lp); trashErr != nil {
@@ -149,6 +151,8 @@ func (s *Syncer) localScanAndUpload(ctx context.Context) error {
 	type upTask struct{ E scan.Entry }
 	jobs := make(chan upTask, workers*2)
 	var wg sync.WaitGroup
+	var errMu sync.Mutex
+	var errs []error
 
 	for i := 0; i < workers; i++ {
 		wg.Go(func() {
@@ -158,11 +162,15 @@ func (s *Syncer) localScanAndUpload(ctx context.Context) error {
 				}
 				if err := s.uploadWorker(ctx, t.E); err != nil {
 					log.Printf("upload error %s: %v", t.E.PathRel, err)
+					errMu.Lock()
+					errs = append(errs, fmt.Errorf("upload %s: %w", t.E.PathRel, err))
+					errMu.Unlock()
 				}
 			}
 		})
 	}
 
+enqueue:
 	for _, e := range entries {
 		if ctx.Err() != nil {
 			break
@@ -173,44 +181,49 @@ func (s *Syncer) localScanAndUpload(ctx context.Context) error {
 		if !s.filter.ShouldSync(e.PathRel, false) || isInternalConflictFile(e.PathRel) {
 			continue
 		}
-		if s.isRecent(e.PathRel) {
-			continue
-		}
 		s.trackChecked(e.PathRel)
 
-		// Skip if size and mtime match the previous scan (cheap pre-check).
-		if prev, ok := s.lastLocal[e.PathRel]; ok && e.Mtime == prev.Mtime && e.Size == prev.Size {
-			continue
+		// Compare content in the worker: timestamps and recent-sync TTLs cannot
+		// distinguish unchanged files from rapid edits or failed uploads.
+		select {
+		case jobs <- upTask{E: e}:
+		case <-ctx.Done():
+			break enqueue
 		}
-		jobs <- upTask{E: e}
 	}
 	close(jobs)
 	wg.Wait()
-
-	// Refresh the mtime+size snapshot for the next cycle.
-	newMap := make(map[string]scan.Entry, len(entries))
-	for _, e := range entries {
-		newMap[e.PathRel] = e
+	if err := ctx.Err(); err != nil {
+		return err
 	}
-	s.lastLocal = newMap
-	return nil
+
+	return errors.Join(errs...)
 }
 
 // uploadWorker hashes a single local file, compares it to the DB record, and
 // uploads if changed. Conflict resolution is applied on HTTP 412.
 func (s *Syncer) uploadWorker(ctx context.Context, e scan.Entry) error {
 	lp := filepath.Join(s.cfg.LocalPath, filepath.FromSlash(e.PathRel))
-	h, _ := scan.HashFile(lp)
+	h, err := scan.HashFile(lp)
+	if err != nil {
+		return err
+	}
 
-	dbOld, _ := store.GetByPathFull(ctx, s.db, e.PathRel)
+	dbOld, err := store.GetByPathFull(ctx, s.db, e.PathRel)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
 	if dbOld != nil && h == dbOld.Shasum {
 		if dbOld.Mtime != e.Mtime {
 			s.dbMu.Lock()
-			_ = store.UpsertItem(ctx, s.db, store.Item{
+			err := store.UpsertItem(ctx, s.db, store.Item{
 				ID: dbOld.ID, PathRel: e.PathRel, ETag: dbOld.ETag, Size: e.Size, Mtime: e.Mtime,
 				Shasum: h, LastSrc: dbOld.LastSrc, LastSync: dbOld.LastSync,
 			})
 			s.dbMu.Unlock()
+			if err != nil {
+				return err
+			}
 		}
 		return nil // content unchanged
 	}
@@ -228,6 +241,7 @@ func (s *Syncer) uploadWorker(ctx context.Context, e scan.Entry) error {
 	}
 
 	rel := "/" + e.PathRel
+	uploadedRel := e.PathRel
 	it, err := doUpload(rel, etagToUse)
 
 	if err != nil && strings.Contains(err.Error(), "http 412") {
@@ -249,6 +263,16 @@ func (s *Syncer) uploadWorker(ctx context.Context, e scan.Entry) error {
 			conflictRel := "/" + makeConflictName(e.PathRel, "local")
 			log.Printf("CONFLICT [Keep Both]: uploading as %s", conflictRel)
 			it, err = doUpload(conflictRel, "")
+			if err == nil {
+				// The uploaded copy has a different cloud ID and path. Never
+				// attach that ID to the original local path: a later delta for
+				// the copy would then untrack the original and allow an overwrite.
+				if dbOld == nil {
+					return fmt.Errorf("conflict copy saved at %s; original item has no tracking record", conflictRel)
+				}
+				uploadedRel = strings.TrimPrefix(conflictRel, "/")
+				it = &graph.DriveItem{ID: dbOld.ID, ETag: dbOld.ETag, Size: e.Size}
+			}
 		}
 	}
 	if err != nil {
@@ -256,13 +280,15 @@ func (s *Syncer) uploadWorker(ctx context.Context, e scan.Entry) error {
 	}
 
 	s.dbMu.Lock()
-	_ = store.UpsertItem(ctx, s.db, store.Item{
+	err = store.UpsertItem(ctx, s.db, store.Item{
 		ID: it.ID, PathRel: e.PathRel, ETag: it.ETag, Size: it.Size, Mtime: e.Mtime,
 		Shasum: h, LastSrc: "local", LastSync: time.Now().Unix(),
 	})
 	s.dbMu.Unlock()
+	if err != nil {
+		return err
+	}
 
-	s.setRecently(e.PathRel, recentlyUploadTTL)
-	s.trackChange("upload", e.PathRel, e.Size)
+	s.trackChange("upload", uploadedRel, e.Size)
 	return nil
 }

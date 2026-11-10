@@ -3,6 +3,7 @@ package scan
 import (
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 type Entry struct {
@@ -41,6 +42,9 @@ func ScanDir(root string) ([]Entry, error) {
 		// (uploading deleted files back to cloud).
 		if d.IsDir() && d.Name() == ".driftsync_trash" {
 			return filepath.SkipDir
+		}
+		if strings.HasPrefix(d.Name(), ".driftsync-tmp-") {
+			return nil
 		}
 
 		// SAFETY: Ignore common system garbage files

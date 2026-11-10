@@ -37,6 +37,10 @@ func Open(path string) (*sql.DB, error) {
 			key TEXT PRIMARY KEY,
 			value TEXT
 		)`,
+		`CREATE TABLE IF NOT EXISTS remote_nodes (
+			id TEXT PRIMARY KEY, parent_id TEXT NOT NULL, name TEXT NOT NULL,
+			path_hint TEXT NOT NULL, is_dir INTEGER NOT NULL, is_root INTEGER NOT NULL
+		)`,
 	}
 	for _, q := range schema {
 		if _, err := db.Exec(q); err != nil {

@@ -29,6 +29,8 @@ DriftSync offers both a **modern Graphical User Interface (GUI)** for desktop us
 ### Flexible Local Metadata Store
 - Keeps a persistent local database (`driftsync.db`) to store file hashes, timestamps, and delta tokens, ensuring safe resumes across runs.
 - **Customizable Config Location:** By default, configuration (`config.yaml`) and database files are stored in the binary's directory, but you can set a custom global path via the GUI settings or the `~/.driftsync/workspace.txt` pointer file.
+- Sync history is bound to the local directory. Changing the directory, or opening an older database without this binding, rebuilds the sync baseline while preserving login credentials. The next cloud download sync performs a full enumeration. If the database contains previous sync history, upload-only mode requires one sync with `download_from_cloud` enabled before it can resume safely.
+- Change detection verifies file contents rather than trusting timestamps alone. Large-file fragments are uploaded sequentially as required by OneDrive; separate files can still upload concurrently.
 
 ### Secure Authentication (Device Code Flow)
 - Uses Microsoft's Device Code flow for login. No local browser dependencies or complex redirect URIs required.

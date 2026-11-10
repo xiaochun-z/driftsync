@@ -2,6 +2,7 @@ package graph
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,15 +10,15 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
-	"sync"
 	"time"
 )
 
 type Client struct {
 	HTTP *http.Client
-	Base string
+	// UploadHTTP must not inject Graph authorization into preauthenticated URLs.
+	UploadHTTP *http.Client
+	Base       string
 }
 
 func NewClient(httpClient *http.Client) *Client {
@@ -39,8 +40,8 @@ type DriveItemFolder struct {
 
 type DriveItemParentReference struct {
 	Path string `json:"path"`
+	ID   string `json:"id"`
 }
-
 
 type DriveItem struct {
 	ID                   string                    `json:"id"`
@@ -53,6 +54,31 @@ type DriveItem struct {
 	Folder               *DriveItemFolder          `json:"folder"`
 	ParentReference      *DriveItemParentReference `json:"parentReference"`
 	Deleted              map[string]any            `json:"deleted"`
+	Root                 map[string]any            `json:"root"`
+}
+
+func (c *Client) GetItemByID(ctx context.Context, id string) (*DriveItem, error) {
+	u := c.Base + "/me/drive/items/" + url.PathEscape(id)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("get item %s http %d", id, resp.StatusCode)
+	}
+	var item DriveItem
+	if err := json.NewDecoder(resp.Body).Decode(&item); err != nil {
+		return nil, err
+	}
+	if item.ID != id {
+		return nil, fmt.Errorf("item ID mismatch: requested %s, received %s", id, item.ID)
+	}
+	return &item, nil
 }
 
 type DeltaResponse struct {
@@ -158,18 +184,18 @@ func (c *Client) ListChildren(ctx context.Context, relPath string) ([]DriveItem,
 		if err != nil {
 			return nil, fmt.Errorf("build list-children request: %w", err)
 		}
-		
+
 		resp, err := c.HTTP.Do(req)
 		if err != nil {
 			return nil, err
 		}
-		
+
 		if resp.StatusCode != 200 {
 			b, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
 			return nil, fmt.Errorf("list children http %d: %s", resp.StatusCode, string(b))
 		}
-		
+
 		var page struct {
 			Value    []DriveItem `json:"value"`
 			NextLink string      `json:"@odata.nextLink"`
@@ -179,7 +205,7 @@ func (c *Client) ListChildren(ctx context.Context, relPath string) ([]DriveItem,
 			return nil, err
 		}
 		resp.Body.Close()
-		
+
 		allItems = append(allItems, page.Value...)
 		u = page.NextLink
 	}
@@ -207,6 +233,12 @@ func (c *Client) DeleteByPath(ctx context.Context, relPath string) error {
 }
 
 func (c *Client) DownloadTo(ctx context.Context, itemID, destPath string) error {
+	return c.DownloadToChecked(ctx, itemID, destPath, "", nil)
+}
+
+// DownloadToChecked verifies bytes and the caller's original local state before
+// replacing the destination. Failed verification never removes the old file.
+func (c *Client) DownloadToChecked(ctx context.Context, itemID, destPath, expectedSHA string, beforeReplace func() error) error {
 	u := fmt.Sprintf("%s/me/drive/items/%s", c.Base, url.PathEscape(itemID))
 	req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
 	if err != nil {
@@ -249,21 +281,19 @@ func (c *Client) DownloadTo(ctx context.Context, itemID, destPath string) error 
 		return err
 	}
 
-	// Atomic write: download to .tmp first, then rename.
-	tmpPath := destPath + ".tmp"
-	f, err := os.Create(tmpPath)
+	// Use an exclusively-created name: destPath+".tmp" may be a user file.
+	f, err := os.CreateTemp(filepath.Dir(destPath), ".driftsync-tmp-*")
 	if err != nil {
 		return err
 	}
-	// Ensure temp file is cleaned up on any error path.
+	tmpPath := f.Name()
 	defer func() {
 		f.Close()
-		if err != nil {
-			os.Remove(tmpPath)
-		}
+		os.Remove(tmpPath)
 	}()
 
-	written, err := io.Copy(f, resp2.Body)
+	hash := sha256.New()
+	written, err := io.Copy(io.MultiWriter(f, hash), resp2.Body)
 	if err != nil {
 		return err
 	}
@@ -275,6 +305,14 @@ func (c *Client) DownloadTo(ctx context.Context, itemID, destPath string) error 
 	// Close explicitly before rename to ensure all bytes are flushed.
 	if err = f.Close(); err != nil {
 		return err
+	}
+	if expectedSHA != "" && !strings.EqualFold(fmt.Sprintf("%x", hash.Sum(nil)), expectedSHA) {
+		return fmt.Errorf("integrity check failed for item %s: sha256 mismatch", itemID)
+	}
+	if beforeReplace != nil {
+		if err := beforeReplace(); err != nil {
+			return err
+		}
 	}
 
 	// Atomic rename; retries handle Windows file-locking from AV scanners.
@@ -289,8 +327,18 @@ func renameWithRetry(src, dest string) error {
 
 	// 2. Windows-safe strategy: Rename Dest -> Backup, Src -> Dest, Delete Backup.
 	// This prevents data loss if the final rename fails.
-	bak := dest + ".old.tmp"
-	_ = os.Remove(bak) // cleanup potential leftover
+	backup, err := os.CreateTemp(filepath.Dir(dest), ".driftsync-tmp-*")
+	if err != nil {
+		return err
+	}
+	bak := backup.Name()
+	if err := backup.Close(); err != nil {
+		os.Remove(bak)
+		return err
+	}
+	if err := os.Remove(bak); err != nil {
+		return err
+	}
 
 	var lastErr error
 	for i := 0; i < 3; i++ {
@@ -312,7 +360,7 @@ func renameWithRetry(src, dest string) error {
 			// CRITICAL: Rollback! Try to restore the backup.
 			if rbErr := os.Rename(bak, dest); rbErr != nil {
 				// Rollback failed. Original file is at 'bak' — user must recover manually.
-				lastErr = fmt.Errorf("replace failed AND rollback failed; original file saved at %q — Error: %v | RollbackErr: %v", bak, err, rbErr)
+				return fmt.Errorf("replace failed AND rollback failed; original file saved at %q — Error: %v | RollbackErr: %v", bak, err, rbErr)
 			} else {
 				lastErr = fmt.Errorf("replace dest failed (rollback succeeded): %w", err)
 			}
@@ -333,8 +381,13 @@ func (c *Client) UploadSmall(ctx context.Context, relPath, localPath, ifMatch st
 	var lastErr error
 	// Retry loop for network blips or Windows file locks
 	for attempt := 0; attempt < 5; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if attempt > 0 {
-			time.Sleep(time.Duration(attempt*500) * time.Millisecond)
+			if err := waitRetry(ctx, time.Duration(attempt*500)*time.Millisecond); err != nil {
+				return nil, err
+			}
 		}
 
 		// Re-open file in each attempt to handle Windows file locking/sharing violations
@@ -391,169 +444,126 @@ func (c *Client) UploadSmall(ctx context.Context, relPath, localPath, ifMatch st
 	return nil, fmt.Errorf("upload small failed after retries: %w", lastErr)
 }
 
-func (c *Client) UploadLarge(ctx context.Context, relPath, localPath, ifMatch string, chunkMB, parallel int) (*DriveItem, error) {
-	if chunkMB <= 0 {
-		chunkMB = 8
-	}
-	if parallel <= 0 {
-		parallel = 2
-	}
-	if parallel > 4 {
-		parallel = 4
-	}
-	safe := escapePathSegments(relPath)
-
-	sessURL, err := c.createUploadSession(ctx, safe, ifMatch)
+// UploadLarge preserves the parallel argument for config/API compatibility, but
+// Graph requires fragments within one session to be sent sequentially. Different
+// files can still upload concurrently through the syncer's upload workers.
+func (c *Client) UploadLarge(ctx context.Context, relPath, localPath, ifMatch string, chunkMB, _ int) (*DriveItem, error) {
+	f, err := os.Open(localPath)
 	if err != nil {
 		return nil, err
 	}
-
-	stat, err := os.Stat(localPath)
+	defer f.Close()
+	stat, err := f.Stat()
 	if err != nil {
-		c.cancelUploadSession(sessURL)
 		return nil, err
 	}
 	size := stat.Size()
-
-	// Graph API requires fragment size to be a multiple of 320 KiB (327,680 bytes).
-	const graphFragmentSize = 327680
-	rawChunk := int64(chunkMB) * 1024 * 1024
-	chunk := (rawChunk / graphFragmentSize) * graphFragmentSize
-	if chunk == 0 {
-		chunk = graphFragmentSize
+	if size == 0 {
+		return c.UploadSmall(ctx, relPath, localPath, ifMatch)
 	}
-
-	type part struct{ Start, End int64 }
-	var parts []part
-	for s := int64(0); s < size; s += chunk {
-		e := s + chunk - 1
-		if e >= size {
-			e = size - 1
-		}
-		parts = append(parts, part{Start: s, End: e})
+	if chunkMB <= 0 {
+		chunkMB = 8
 	}
-
-	type result struct {
-		Item *DriveItem
-		Err  error
+	// Each request must be strictly smaller than 60 MiB and aligned to 320 KiB.
+	const fragment = int64(327680)
+	const maxChunk = ((60*1024*1024 - 1) / fragment) * fragment
+	chunk := maxChunk
+	if chunkMB < 60 {
+		chunk = (int64(chunkMB) * 1024 * 1024 / fragment) * fragment
 	}
-	jobs := make(chan part, len(parts))
-	resc := make(chan result, len(parts))
-
-	var wg sync.WaitGroup
-	worker := func() {
-		defer wg.Done()
-		for p := range jobs {
-			f, openErr := os.Open(localPath)
-			if openErr != nil {
-				resc <- result{Err: openErr}
-				continue
-			}
-
-			// chunkErr tracks the outcome of this chunk's attempt; kept separate from
-			// inner-scope :=-declared variables to avoid shadowing bugs.
-			var (
-				resp     *http.Response
-				chunkErr error
-			)
-			for attempt := 0; attempt < 5; attempt++ {
-				if _, seekErr := f.Seek(p.Start, io.SeekStart); seekErr != nil {
-					chunkErr = fmt.Errorf("seek to byte %d: %w", p.Start, seekErr)
-					break
-				}
-				lim := io.LimitReader(f, p.End-p.Start+1)
-
-				req, reqErr := http.NewRequestWithContext(ctx, "PUT", sessURL, lim)
-				if reqErr != nil {
-					chunkErr = reqErr
-					break // Fatal: URL or context invalid
-				}
-				req.Header.Set("Content-Length", strconv.FormatInt(p.End-p.Start+1, 10))
-				req.Header.Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", p.Start, p.End, size))
-
-				resp, chunkErr = c.HTTP.Do(req)
-				if chunkErr == nil && (resp.StatusCode == 200 || resp.StatusCode == 201 || resp.StatusCode == 202) {
-					break
-				}
-
-				// Retry on network error or server-side transient failure
-				shouldRetry := chunkErr != nil
-				if !shouldRetry && resp != nil && (resp.StatusCode == 429 || resp.StatusCode >= 500) {
-					shouldRetry = true
-				}
-				if shouldRetry {
-					if resp != nil {
-						io.Copy(io.Discard, resp.Body)
-						resp.Body.Close()
-						resp = nil
-					}
-					time.Sleep(time.Duration(1<<attempt) * 200 * time.Millisecond)
-					continue
-				}
-				break
-			}
-
-			if chunkErr != nil {
-				f.Close()
-				resc <- result{Err: chunkErr}
-				continue
-			}
-			if resp == nil {
-				f.Close()
-				resc <- result{Err: fmt.Errorf("upload chunk: no response after retries")}
-				continue
-			}
-
-			body, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
-			f.Close()
-
-			if resp.StatusCode == 200 || resp.StatusCode == 201 {
-				var it DriveItem
-				if err := json.Unmarshal(body, &it); err == nil && it.ID != "" {
-					resc <- result{Item: &it}
-					continue
-				}
-			}
-			// 202 Accepted is expected for all intermediate chunks.
-			if resp.StatusCode == 202 {
-				resc <- result{}
-				continue
-			}
-			resc <- result{Err: fmt.Errorf("upload chunk http %d: %s", resp.StatusCode, string(body))}
-		}
+	if chunk < fragment {
+		chunk = fragment
 	}
-
-	for i := 0; i < parallel; i++ {
-		wg.Add(1)
-		go worker()
+	sessURL, err := c.createUploadSession(ctx, escapePathSegments(relPath), ifMatch)
+	if err != nil {
+		return nil, err
 	}
-	for _, p := range parts {
-		jobs <- p
-	}
-	close(jobs)
-	wg.Wait()
-	close(resc)
-
-	var lastItem *DriveItem
-	for r := range resc {
-		if r.Err != nil {
-			// Cancel the upload session so OneDrive doesn't hold quota for an orphaned session.
+	completed := false
+	defer func() {
+		if !completed {
 			go c.cancelUploadSession(sessURL)
-			return nil, r.Err
 		}
-		if r.Item != nil {
-			lastItem = r.Item
+	}()
+	for start := int64(0); start < size; {
+		length := min(chunk, size-start)
+		var body []byte
+		var status int
+		for attempt := 0; ; attempt++ {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			req, err := http.NewRequestWithContext(ctx, http.MethodPut, sessURL, io.NewSectionReader(f, start, length))
+			if err != nil {
+				return nil, err
+			}
+			req.ContentLength = length
+			req.Header.Set("Content-Type", "application/octet-stream")
+			req.Header.Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, start+length-1, size))
+			// uploadUrl is preauthenticated: never send the Graph Bearer token.
+			resp, requestErr := c.uploadClient().Do(req)
+			status = 0
+			if resp != nil {
+				status = resp.StatusCode
+				body, err = io.ReadAll(resp.Body)
+				resp.Body.Close()
+				if requestErr == nil {
+					requestErr = err
+				}
+			}
+			retry := requestErr != nil || status == 429 || status >= 500
+			if retry && attempt < 4 {
+				if err := waitRetry(ctx, time.Duration(1<<attempt)*200*time.Millisecond); err != nil {
+					return nil, err
+				}
+				continue
+			}
+			if requestErr != nil {
+				return nil, requestErr
+			}
+			break
 		}
+		start += length
+		if status == http.StatusAccepted {
+			if start == size {
+				return nil, fmt.Errorf("upload session did not confirm completion")
+			}
+			continue
+		}
+		if status != http.StatusOK && status != http.StatusCreated {
+			return nil, fmt.Errorf("upload chunk http %d: %s", status, body)
+		}
+		if start != size {
+			return nil, fmt.Errorf("upload session completed before all bytes were sent")
+		}
+		var item DriveItem
+		if err := json.Unmarshal(body, &item); err != nil {
+			return nil, err
+		}
+		if item.ID == "" {
+			return nil, fmt.Errorf("upload completed without item ID")
+		}
+		completed = true
+		return &item, nil
 	}
-	if lastItem == nil {
-		it, err := c.GetItemByPath(ctx, safe)
-		if err == nil {
-			return it, nil
-		}
-		return nil, fmt.Errorf("upload session finished without final item response")
+	return nil, fmt.Errorf("upload session finished without final item response")
+}
+
+func waitRetry(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
 	}
-	return lastItem, nil
+}
+
+func (c *Client) uploadClient() *http.Client {
+	if c.UploadHTTP != nil {
+		return c.UploadHTTP
+	}
+	return http.DefaultClient
 }
 
 // cancelUploadSession sends a DELETE to the session URL to free OneDrive quota
@@ -565,7 +575,7 @@ func (c *Client) cancelUploadSession(sessURL string) {
 	if err != nil {
 		return
 	}
-	if resp, err := c.HTTP.Do(req); err == nil {
+	if resp, err := c.uploadClient().Do(req); err == nil {
 		io.Copy(io.Discard, resp.Body)
 		resp.Body.Close()
 	}

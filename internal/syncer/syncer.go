@@ -9,6 +9,7 @@ package syncer
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -18,7 +19,6 @@ import (
 
 	"github.com/xiaochun-z/driftsync/internal/config"
 	"github.com/xiaochun-z/driftsync/internal/graph"
-	"github.com/xiaochun-z/driftsync/internal/scan"
 	"github.com/xiaochun-z/driftsync/internal/selective"
 	"github.com/xiaochun-z/driftsync/internal/store"
 	"github.com/xiaochun-z/driftsync/internal/ui"
@@ -29,9 +29,6 @@ const (
 	// Files larger than this use the resumable session API.
 	smallFileThreshold int64 = 4 * 1024 * 1024
 
-	// recently* TTLs suppress echo downloads/uploads for files just synced.
-	recentlyDownloadTTL    = 30 * time.Second
-	recentlyUploadTTL      = 60 * time.Second
 	loaderInterval         = 120 * time.Millisecond
 	defaultDownloadWorkers = 8
 	defaultUploadWorkers   = 4
@@ -55,11 +52,8 @@ type Syncer struct {
 	filter *selective.List
 
 	deltaLink string
-	lastLocal map[string]scan.Entry // mtime+size cache from last upload scan
 
-	// recently tracks files synced within their TTL to suppress echo re-syncs.
-	recently map[string]int64 // path → Unix expiry timestamp
-	mu       sync.Mutex       // guards recently, uploaded, downloaded, deleted
+	mu sync.Mutex // guards uploaded, downloaded, deleted
 
 	dbMu sync.Mutex // serialises all DB writes
 
@@ -88,12 +82,10 @@ func NewSyncer(cfg *config.Config, db *sql.DB, g *graph.Client) *Syncer {
 		}
 	}
 	return &Syncer{
-		cfg:       cfg,
-		db:        db,
-		g:         g,
-		filter:    f,
-		lastLocal: map[string]scan.Entry{},
-		recently:  map[string]int64{},
+		cfg:    cfg,
+		db:     db,
+		g:      g,
+		filter: f,
 	}
 }
 
@@ -104,6 +96,18 @@ func (s *Syncer) SyncOnce(ctx context.Context) error {
 
 	if err := os.MkdirAll(s.cfg.LocalPath, 0o755); err != nil {
 		return fmt.Errorf("create local root: %w", err)
+	}
+	reset, err := store.BindSyncRoot(ctx, s.db, s.cfg.LocalPath)
+	if err != nil {
+		return fmt.Errorf("bind sync root: %w", err)
+	}
+	if reset {
+		s.deltaLink = ""
+	}
+	if required, err := store.GetMeta(ctx, s.db, "needs_cloud_baseline"); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	} else if required == "1" && s.cfg.UploadFromLocal && !s.cfg.DownloadFromCloud {
+		return fmt.Errorf("sync history requires a new cloud baseline: enable download_from_cloud for one sync before resuming upload-only mode")
 	}
 
 	// Phase 0: cleanup local files that were previously synced but are now excluded.
@@ -124,6 +128,8 @@ func (s *Syncer) SyncOnce(ctx context.Context) error {
 		if s.deltaLink == "" {
 			if val, err := store.GetMeta(ctx, s.db, "delta_link"); err == nil {
 				s.deltaLink = val
+			} else if !errors.Is(err, sql.ErrNoRows) {
+				return fmt.Errorf("load delta cursor: %w", err)
 			}
 		}
 		if err := s.cloudDelta(ctx); err != nil {
@@ -134,7 +140,7 @@ func (s *Syncer) SyncOnce(ctx context.Context) error {
 	// Phase 3: upload new/modified local files.
 	if s.cfg.UploadFromLocal {
 		if err := s.localScanAndUpload(ctx); err != nil {
-			log.Printf("local upload: %v", err)
+			return fmt.Errorf("local upload: %w", err)
 		}
 	}
 

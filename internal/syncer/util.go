@@ -1,7 +1,7 @@
 package syncer
 
 import (
-	"context"
+	"crypto/rand"
 	"fmt"
 	"log"
 	"os"
@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/xiaochun-z/driftsync/internal/graph"
-	"github.com/xiaochun-z/driftsync/internal/store"
 )
 
 // --- Path helpers ---
@@ -40,7 +39,7 @@ func isInternalConflictFile(pathRel string) bool {
 func makeConflictPath(localPath, tag string) string {
 	ext := filepath.Ext(localPath)
 	base := strings.TrimSuffix(filepath.Base(localPath), ext)
-	name := fmt.Sprintf("%s.%s-conflict-%s%s", base, tag, time.Now().Format("20060102-150405"), ext)
+	name := fmt.Sprintf("%s.%s-conflict-%s-%s%s", base, tag, time.Now().Format("20060102-150405"), rand.Text(), ext)
 	return filepath.Join(filepath.Dir(localPath), name)
 }
 
@@ -48,7 +47,8 @@ func makeConflictPath(localPath, tag string) string {
 func makeConflictName(pathRel, tag string) string {
 	ext := filepath.Ext(pathRel)
 	base := strings.TrimSuffix(filepath.Base(pathRel), ext)
-	return fmt.Sprintf("%s.%s-conflict-%s%s", base, tag, time.Now().Format("20060102-150405"), ext)
+	name := fmt.Sprintf("%s.%s-conflict-%s-%s%s", base, tag, time.Now().Format("20060102-150405"), rand.Text(), ext)
+	return filepath.ToSlash(filepath.Join(filepath.Dir(pathRel), name))
 }
 
 // --- Trash ---
@@ -79,44 +79,6 @@ func (s *Syncer) moveToTrash(path string) error {
 	return os.Rename(path, dest)
 }
 
-// --- Delta link persistence ---
-
-func (s *Syncer) saveDeltaLink(ctx context.Context, link string) {
-	s.dbMu.Lock()
-	_ = store.SetMeta(ctx, s.db, "delta_link", link)
-	s.dbMu.Unlock()
-}
-
-// --- Recently-synced map ---
-
-func (s *Syncer) setRecently(rel string, d time.Duration) {
-	s.mu.Lock()
-	s.recently[rel] = time.Now().Add(d).Unix()
-	s.mu.Unlock()
-}
-
-// isRecent reports whether rel was synced within its TTL.
-// Expired entries are removed lazily to prevent unbounded map growth.
-func (s *Syncer) isRecent(rel string) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	t, ok := s.recently[rel]
-	if !ok {
-		return false
-	}
-	if t <= time.Now().Unix() {
-		delete(s.recently, rel)
-		return false
-	}
-	return true
-}
-
-func (s *Syncer) clearRecently(rel string) {
-	s.mu.Lock()
-	delete(s.recently, rel)
-	s.mu.Unlock()
-}
-
 // --- Change tracking and summary ---
 
 func (s *Syncer) trackChange(action, rel string, size int64) {
@@ -134,7 +96,7 @@ func (s *Syncer) trackChange(action, rel string, size int64) {
 	if s.cfg.Log != nil && s.cfg.Log.Verbose {
 		log.Printf("[%s] %s (%d bytes)", strings.ToUpper(action), rel, size)
 	}
-	
+
 	if s.OnSyncEvent != nil {
 		s.OnSyncEvent(action, rel)
 	}

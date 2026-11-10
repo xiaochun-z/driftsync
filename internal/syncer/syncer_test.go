@@ -34,6 +34,9 @@ func TestSyncOnceSafetyAbortStopsSync(t *testing.T) {
 			}
 			defer db.Close()
 			root := t.TempDir()
+			if _, err := store.BindSyncRoot(ctx, db, root); err != nil {
+				t.Fatal(err)
+			}
 			for i := 0; i < tc.tracked; i++ {
 				path := fmt.Sprintf("file%d.txt", i)
 				if err := store.UpsertItem(ctx, db, store.Item{ID: path, PathRel: path}); err != nil {
