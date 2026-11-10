@@ -19,7 +19,7 @@ import (
 
 // version is the application version.
 // Override at build time via: go build -ldflags="-X main.version=v1.2.3"
-var version = "dev"
+var version = "v0.9.7"
 
 func printUsage() {
 	exe := filepath.Base(os.Args[0])
