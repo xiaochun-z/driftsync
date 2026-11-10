@@ -56,8 +56,8 @@ DriftSync is split into two targets: the headless **CLI** and the Wails-powered 
 ### Prerequisites
 
 To build DriftSync from source, you will need:
-1. **Go 1.25+**
-2. **Node.js 20+** (Required only for the GUI)
+1. **Go 1.27.3+**
+2. **Node.js 22 (22.18+) or 24.11+** (Required only for the GUI; Node.js 24 LTS is recommended)
 3. **C/C++ Compiler & Dev Headers** (Required for the GUI on Linux/macOS)
 
 **Linux Prerequisites (GUI Only):**
@@ -96,7 +96,7 @@ The GUI requires **CGO** and the [Wails](https://wails.io/) toolkit. **Cross-com
 
 ```bash
 # 1. Install the Wails CLI
-go install github.com/wailsapp/wails/v2/cmd/wails@latest
+go install github.com/wailsapp/wails/v2/cmd/wails@v2.17.1
 
 # 2. Build the desktop application
 wails build
